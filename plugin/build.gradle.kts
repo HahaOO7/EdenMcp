@@ -5,7 +5,6 @@ plugins {
 
 dependencies {
     implementation(project(":core"))
-    implementation(project(":hooks:spark"))
     implementation(project(":hooks:luckperms"))
 
     compileOnly("io.papermc.paper:paper-api:26.3.build.+")

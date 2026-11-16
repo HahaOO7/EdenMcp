@@ -1,0 +1,32 @@
+mcp:
+  enabled: true
+  mode: safe                # safe | moderate | unsafe (startup default; changeable at runtime)
+
+  transport:
+    type: http-sse          # preferred, remote-capable
+    bind: 0.0.0.0
+    port: 8765
+    tls:
+      enabled: true         # protects access key/data in transit
+      mode: self-signed     # self-signed (auto-generated on first start) | custom
+      # keystore-path: plugins/EdenMcp/mcp-keystore.p12
+      # keystore-password: changeit
+
+  auth:
+    # Access key is stored in .key in the plugin data folder.
+    # On first startup, if missing, a cryptographically random key is generated.
+
+hooks:
+  luckperms:
+    enabled: true
+
+commands:
+  # Command dispatch is UNSAFE_ACTION by default.
+  # Ordered regex rules matched against the dispatched command string; first match wins.
+  classification: []
+  #  - level: moderate
+  #    pattern: "^say(\\s.*)?$"
+
+audit:
+  log-tool-calls: true
+  log-mode-changes: true
