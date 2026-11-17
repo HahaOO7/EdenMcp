@@ -17,16 +17,20 @@ import java.util.regex.Pattern;
 public final class LogsReadTool implements McpTool {
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 500;
-    private static final int MAX_SCAN_BYTES = 1024 * 1024; // 1 MiB tail scan budget
+    private static final int MAX_SCAN_BYTES = 1024 * 1024;
+    private static final int MAX_PATTERN_LENGTH = 200;
+    private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)]*[+*][^)]*\\))[+*{]");
     private final Path logFile;
+    private final boolean requireModerate;
 
-    public LogsReadTool(Path logFile) {
+    public LogsReadTool(Path logFile, boolean requireModerate) {
         this.logFile = logFile;
+        this.requireModerate = requireModerate;
     }
 
     @Override public String name() { return "eden.logs.read"; }
     @Override public String description() { return "Read recent server log lines with optional filter/limit (bounded)."; }
-    @Override public CapabilityLevel level() { return CapabilityLevel.SAFE_READ; }
+    @Override public CapabilityLevel level() { return requireModerate ? CapabilityLevel.MODERATE_ACTION : CapabilityLevel.SAFE_READ; }
     @Override public SideEffects sideEffects() { return SideEffects.NONE; }
     @Override public List<String> tags() { return List.of("logs"); }
     @Override
@@ -43,9 +47,7 @@ public final class LogsReadTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        if (logFile == null || !Files.exists(logFile)) {
-            return ToolResult.error("Log file not available");
-        }
+        if (logFile == null || !Files.exists(logFile)) return ToolResult.error("Log file not available");
         int limit = DEFAULT_LIMIT;
         Object lim = context.arguments().get("limit");
         if (lim instanceof Number n) limit = Math.max(1, Math.min(MAX_LIMIT, n.intValue()));
@@ -55,13 +57,19 @@ public final class LogsReadTool implements McpTool {
         boolean regex = Boolean.TRUE.equals(context.arguments().get("regex")) || "true".equals(String.valueOf(context.arguments().get("regex")));
         Pattern pattern = null;
         if (filter != null && !filter.isBlank() && regex) {
-            try { pattern = Pattern.compile(filter); } catch (Exception e) { return ToolResult.error("Invalid regex: " + e.getMessage()); }
+            if (filter.length() > MAX_PATTERN_LENGTH) return ToolResult.error("Regex filter is too long");
+            if (NESTED_QUANTIFIER.matcher(filter).find()) return ToolResult.error("Regex filter rejected: nested quantifier");
+            try {
+                pattern = Pattern.compile(filter);
+            } catch (Exception e) {
+                return ToolResult.error("Invalid regex");
+            }
         }
         try {
             List<String> lines = readTailLines(logFile, limit, filter, pattern, MAX_SCAN_BYTES);
             return ToolResult.ok(Map.of("file", logFile.toString(), "lines", lines, "count", lines.size()));
         } catch (IOException e) {
-            return ToolResult.error("Failed to read logs: " + e.getMessage());
+            return ToolResult.error("Failed to read logs");
         }
     }
 
@@ -76,20 +84,16 @@ public final class LogsReadTool implements McpTool {
         }
         String text = new String(buf, StandardCharsets.UTF_8);
         String[] parts = text.split("\\R", -1);
-        int start = 0;
-        // if we didn't read from beginning, first line may be partial; drop it
-        if (length > toRead && parts.length > 0) {
-            start = 1;
-        }
+        int start = length > toRead && parts.length > 0 ? 1 : 0;
         Deque<String> out = new ArrayDeque<>();
         for (int i = start; i < parts.length; i++) {
             String line = parts[i];
-            if (i == parts.length - 1 && line.isEmpty()) continue; // trailing newline artifact
+            if (i == parts.length - 1 && line.isEmpty()) continue;
             if (filter != null && !filter.isBlank()) {
                 if (pattern != null) {
                     if (!pattern.matcher(line).find()) continue;
-                } else {
-                    if (!line.contains(filter)) continue;
+                } else if (!line.contains(filter)) {
+                    continue;
                 }
             }
             out.addLast(line);

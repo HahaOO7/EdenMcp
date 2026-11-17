@@ -1,3 +1,4 @@
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -22,15 +23,12 @@ val integrationServerDirProvider = layout.buildDirectory.dir("integration-server
 val luckPermsPluginJarProvider = layout.buildDirectory.file("integration-libs/LuckPerms-Bukkit.jar")
 
 val downloadLuckPerms = tasks.register("downloadLuckPerms") {
-    val outFile = layout.buildDirectory.file("integration-libs/LuckPerms-Bukkit.jar")
-    outputs.file(outFile)
-    // Script-object capture in doLast is not configuration-cache friendly; task is safe to rerun.
-    notCompatibleWithConfigurationCache("Downloads external file in a simple script action")
+    val out = luckPermsPluginJarProvider.get().asFile
+    outputs.file(out)
     doLast {
-        val out = outFile.get().asFile
         out.parentFile.mkdirs()
         if (!out.exists() || out.length() == 0L) {
-            val url = uri("https://download.luckperms.net/1678/bukkit/loader/LuckPerms-Bukkit-5.5.91.jar").toURL()
+            val url = URI.create("https://download.luckperms.net/1678/bukkit/loader/LuckPerms-Bukkit-5.5.91.jar").toURL()
             url.openStream().use { input ->
                 Files.copy(input, out.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
@@ -83,9 +81,7 @@ val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
               luckperms:
                 enabled: true
             commands:
-              classification:
-                - pattern: "^mcp mode set (safe|moderate|unsafe)$"
-                  level: safe
+              classification: []
             audit:
               log-tool-calls: true
               log-mode-changes: true

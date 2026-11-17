@@ -18,11 +18,14 @@ public final class ModeSetTool implements McpTool {
     private final AtomicReference<OperatingMode> mode;
     private final AuditLogger audit;
     private final Consumer<OperatingMode> onChange;
+    private final boolean allowUnsafeAtRuntime;
 
-    public ModeSetTool(AtomicReference<OperatingMode> mode, AuditLogger audit, Consumer<OperatingMode> onChange) {
+    public ModeSetTool(AtomicReference<OperatingMode> mode, AuditLogger audit,
+                       Consumer<OperatingMode> onChange, boolean allowUnsafeAtRuntime) {
         this.mode = mode;
         this.audit = audit;
         this.onChange = onChange;
+        this.allowUnsafeAtRuntime = allowUnsafeAtRuntime;
     }
 
     @Override public String name() { return "eden.mode.set"; }
@@ -45,6 +48,9 @@ public final class ModeSetTool implements McpTool {
         if (m == null) return ToolResult.error("Missing 'mode'");
         OperatingMode next = OperatingMode.parse(String.valueOf(m), null);
         if (next == null) return ToolResult.error("Invalid mode");
+        if (next == OperatingMode.UNSAFE && !allowUnsafeAtRuntime) {
+            return ToolResult.error("Unsafe mode is locked by server policy; use the server console");
+        }
         OperatingMode prev = mode.getAndSet(next);
         audit.modeChange(context.callerId(), prev.name(), next.name());
         if (onChange != null) {

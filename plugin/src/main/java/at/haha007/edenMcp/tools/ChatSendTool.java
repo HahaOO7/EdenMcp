@@ -20,14 +20,16 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public final class ChatSendTool implements McpTool {
-    private static final long MIN_INTERVAL_MS = 250; // simple rate limit
+    private static final long MIN_INTERVAL_MS = 250;
     private final Plugin plugin;
     private final Logger logger;
+    private final boolean logVerbose;
     private final AtomicLong last = new AtomicLong(0);
 
-    public ChatSendTool(Plugin plugin, Logger logger) {
+    public ChatSendTool(Plugin plugin, Logger logger, boolean logVerbose) {
         this.plugin = plugin;
         this.logger = logger;
+        this.logVerbose = logVerbose;
     }
 
     @Override public String name() { return "eden.chat.send"; }
@@ -68,7 +70,7 @@ public final class ChatSendTool implements McpTool {
                     Bukkit.getServer().broadcast(attributed);
                     return null;
                 });
-                logger.info("[CHAT] broadcast by " + context.callerId() + ": " + message);
+                log("broadcast", "broadcast", context, message);
                 return ToolResult.ok(Map.of("sent", "broadcast", "message", message));
             } else {
                 String sentTo = runSync(() -> {
@@ -80,13 +82,23 @@ public final class ChatSendTool implements McpTool {
                     p.sendMessage(attributed);
                     return p.getName();
                 });
-                if (sentTo == null) return ToolResult.error("Player not found: " + target);
-                logger.info("[CHAT] to " + sentTo + " by " + context.callerId() + ": " + message);
+                if (sentTo == null) return ToolResult.error("Player not found");
+                log("player", sentTo, context, message);
                 return ToolResult.ok(Map.of("sent", sentTo, "message", message));
             }
         } catch (Exception e) {
-            return ToolResult.error("Chat send failed: " + e.getMessage());
+            logger.log(java.util.logging.Level.WARNING, "Chat send failed for " + context.callerId(), e);
+            return ToolResult.error("Chat send failed");
         }
+    }
+
+    private void log(String kind, String target, ToolContext context, String message) {
+        StringBuilder msg = new StringBuilder("[CHAT] kind=").append(kind)
+                .append(" target=").append(target)
+                .append(" caller=").append(context.callerId())
+                .append(" length=").append(message.length());
+        if (logVerbose) msg.append(" message=").append(message);
+        logger.info(msg.toString());
     }
 
     private <T> T runSync(Callable<T> task) throws Exception {

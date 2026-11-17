@@ -6,23 +6,39 @@ mcp:
     type: http-sse          # preferred, remote-capable
     bind: 0.0.0.0
     port: 8765
+    # Optional hardening; secure defaults are applied when omitted.
+    # allowed-hosts: []      # strict Host allowlist (auto-derived from bind when omitted)
+    # allowed-origins: []    # browser origins allowed to call the MCP endpoint
+    # max-body-bytes: 1048576
+    # max-batch-size: 20
+    # max-sse-clients: 20
     tls:
       enabled: true         # protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
       # keystore-path: plugins/EdenMcp/mcp-keystore.p12
       # keystore-password: changeit
+      # require-client-cert: false   # optional mTLS; set truststore-path too
+      # truststore-path: plugins/EdenMcp/client-truststore.p12
+      # truststore-password: changeit
 
   auth:
     # Access key is stored in .key in the plugin data folder.
-    # On first startup, if missing, a cryptographically random key is generated.
+    # On first startup, if missing or invalid, a cryptographically random key is generated.
+    # allow-legacy-header: false    # X-Eden-Key (deprecated); Bearer token is the default
+    # max-failures: 10              # failed auth attempts before a temporary block
+    # block-seconds: 60
+
+  policy:
+    # allow-unsafe-at-runtime: true  # set false to require the server console for 'unsafe'
+    # logs-require-moderate: false   # set true to hide eden.logs.read in safe mode
 
 hooks:
   luckperms:
     enabled: true
 
 commands:
-  # Command dispatch is UNSAFE_ACTION by default.
-  # Ordered regex rules matched against the dispatched command string; first match wins.
+  # Command dispatch is UNSAFE_ACTION and is never advertised in safe/moderate mode.
+  # Patterns are always anchored to the whole command; first match wins.
   classification: []
   #  - level: moderate
   #    pattern: "^say(\\s.*)?$"
@@ -30,3 +46,4 @@ commands:
 audit:
   log-tool-calls: true
   log-mode-changes: true
+  # log-verbose: false      # log full commands/messages (off: log only metadata)

@@ -21,11 +21,13 @@ public final class CommandDispatchTool implements McpTool {
     private final Plugin plugin;
     private final AtomicReference<CommandClassification> classification;
     private final Logger logger;
+    private final boolean logVerbose;
 
-    public CommandDispatchTool(Plugin plugin, CommandClassification classification, Logger logger) {
+    public CommandDispatchTool(Plugin plugin, CommandClassification classification, Logger logger, boolean logVerbose) {
         this.plugin = plugin;
         this.classification = new AtomicReference<>(classification == null ? CommandClassification.empty() : classification);
         this.logger = logger;
+        this.logVerbose = logVerbose;
     }
 
     public void updateClassification(CommandClassification classification) {
@@ -33,8 +35,8 @@ public final class CommandDispatchTool implements McpTool {
     }
 
     @Override public String name() { return "eden.command.dispatch"; }
-    @Override public String description() { return "Execute a console command. UNSAFE_ACTION by default; server regex rules may reclassify to MODERATE/SAFE. Effective classification is enforced per command. Strongly audited."; }
-    @Override public CapabilityLevel level() { return CapabilityLevel.SAFE_READ; }
+    @Override public String description() { return "Execute a console command (unsafe only). Strongly audited; server classification rules are reported in the result."; }
+    @Override public CapabilityLevel level() { return CapabilityLevel.UNSAFE_ACTION; }
     @Override public SideEffects sideEffects() { return SideEffects.DANGEROUS; }
     @Override public List<String> tags() { return List.of("commands"); }
     @Override
@@ -48,21 +50,22 @@ public final class CommandDispatchTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        String cmd = context.arguments().get("command") == null ? null : String.valueOf(context.arguments().get("command"));
-        if (cmd == null || cmd.isBlank()) return ToolResult.error("Missing command");
-        String normalized = cmd.startsWith("/") ? cmd.substring(1) : cmd;
+        String normalized = CommandClassification.normalize(
+                context.arguments().get("command") == null ? null : String.valueOf(context.arguments().get("command")));
+        if (normalized == null) return ToolResult.error("Missing or invalid command");
+
         CapabilityLevel effective = classification.get().classify(normalized);
         OperatingMode mode = context.activeMode();
         if (!mode.allows(effective)) {
+            log("denied-by-classification", context.callerId(), mode, effective, null);
             return ToolResult.error("Command classified as " + effective + " and not permitted in mode " + mode);
         }
-        logger.warning("[COMMAND] caller=" + context.callerId() + " mode=" + mode + " classification=" + effective + " cmd=" + normalized);
+        log("dispatch", context.callerId(), mode, effective, logVerbose ? normalized : null);
         try {
             CompletableFuture<Boolean> future = new CompletableFuture<>();
             Bukkit.getScheduler().runTask(plugin, () -> {
                 try {
-                    boolean ok = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), normalized);
-                    future.complete(ok);
+                    future.complete(Bukkit.dispatchCommand(Bukkit.getConsoleSender(), normalized));
                 } catch (Throwable t) {
                     future.completeExceptionally(t);
                 }
@@ -70,7 +73,17 @@ public final class CommandDispatchTool implements McpTool {
             boolean ok = future.get(10, TimeUnit.SECONDS);
             return ToolResult.ok(Map.of("dispatched", ok, "classification", effective.name(), "command", normalized));
         } catch (Exception e) {
-            return ToolResult.error("Dispatch failed: " + e.getMessage());
+            logger.log(java.util.logging.Level.WARNING, "Command dispatch failed for " + context.callerId(), e);
+            return ToolResult.error("Dispatch failed");
         }
+    }
+
+    private void log(String action, String caller, OperatingMode mode, CapabilityLevel classification, String command) {
+        StringBuilder msg = new StringBuilder("[COMMAND] action=").append(action)
+                .append(" caller=").append(caller)
+                .append(" mode=").append(mode)
+                .append(" classification=").append(classification);
+        if (command != null) msg.append(" cmd=").append(command);
+        logger.warning(msg.toString());
     }
 }

@@ -9,6 +9,7 @@ import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import at.haha007.edenMcp.core.tool.ToolResult;
+import at.haha007.edenMcp.core.util.PrivateFileUtil;
 import com.google.gson.*;
 import com.sun.net.httpserver.*;
 
@@ -19,7 +20,11 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.security.cert.Certificate;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -28,6 +33,7 @@ import java.util.logging.Logger;
 
 public final class McpHttpServer {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final EdenConfig config;
     private final AccessKeyManager keyManager;
@@ -36,13 +42,22 @@ public final class McpHttpServer {
     private final AuditLogger audit;
     private final Logger logger;
     private final AtomicReference<OperatingMode> mode;
+    private final Set<String> allowedHosts = new HashSet<>();
+    private final Map<String, FailureRecord> failures = new ConcurrentHashMap<>();
+    private final boolean wildcardBind;
+    private final boolean explicitHosts;
     private HttpServer server;
+    private volatile int port;
     private final Set<SseClient> sseClients = ConcurrentHashMap.newKeySet();
-    private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "edenmcp-http");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+            8, 32, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(256),
+            r -> {
+                Thread t = new Thread(r, "edenmcp-http");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy());
 
     public McpHttpServer(EdenConfig config,
                          AccessKeyManager keyManager,
@@ -59,7 +74,17 @@ public final class McpHttpServer {
         this.audit = audit;
         this.logger = logger;
         this.mode = mode;
-        // configSnapshotSupplier currently unused by transport; kept for future protocol extensions
+        // configSnapshotSupplier is reserved for future protocol extensions.
+
+        String bind = config.transport().bind();
+        this.wildcardBind = bind == null || bind.isBlank() || bind.equals("0.0.0.0")
+                || bind.equals("::") || bind.equals("*");
+        this.explicitHosts = !config.transport().allowedHosts().isEmpty();
+        allowedHosts.addAll(List.of("localhost", "127.0.0.1", "::1", "[::1]"));
+        if (!wildcardBind) allowedHosts.add(bind.toLowerCase(Locale.ROOT));
+        for (String h : config.transport().allowedHosts()) {
+            if (h != null && !h.isBlank()) allowedHosts.add(h.trim().toLowerCase(Locale.ROOT));
+        }
     }
 
     public void start(Path dataFolder) throws Exception {
@@ -68,7 +93,13 @@ public final class McpHttpServer {
         if (tls.enabled()) {
             HttpsServer https = HttpsServer.create(addr, 0);
             SSLContext ssl = createSslContext(tls, dataFolder);
-            https.setHttpsConfigurator(new HttpsConfigurator(ssl));
+            SSLParameters hardened = hardenedSslParameters(ssl, tls.requireClientCert());
+            https.setHttpsConfigurator(new HttpsConfigurator(ssl) {
+                @Override
+                public void configure(HttpsParameters params) {
+                    params.setSSLParameters(hardened);
+                }
+            });
             this.server = https;
             logger.info("MCP HTTP server starting with TLS enabled on " + addr);
         } else {
@@ -80,7 +111,17 @@ public final class McpHttpServer {
         server.createContext("/message", this::handleMcp);
         server.setExecutor(executor);
         server.start();
-        logger.info("MCP server listening on " + (tls.enabled() ? "https" : "http") + "://" + config.transport().bind() + ":" + config.transport().port());
+        this.port = server.getAddress().getPort();
+        logger.info("MCP server listening on " + (tls.enabled() ? "https" : "http") + "://"
+                + config.transport().bind() + ":" + port);
+        if (wildcardBind && !explicitHosts) {
+            logger.info("MCP Host validation: wildcard bind, non-browser clients may use any Host; "
+                    + "set mcp.transport.allowed-hosts for strict validation.");
+        }
+    }
+
+    public int port() {
+        return port;
     }
 
     public void stop() {
@@ -98,6 +139,10 @@ public final class McpHttpServer {
                 return;
             }
             if (!authorize(ex)) return;
+            if (sseClients.size() >= config.transport().maxSseClients()) {
+                sendJson(ex, 503, Map.of("error", "too many SSE clients"));
+                return;
+            }
             Headers h = ex.getResponseHeaders();
             h.add("Content-Type", "text/event-stream");
             h.add("Cache-Control", "no-cache");
@@ -108,7 +153,6 @@ public final class McpHttpServer {
             sseClients.add(client);
             client.sendEvent("endpoint", Map.of("url", "/message"));
             client.sendEvent("ready", Map.of("mode", mode.get().name().toLowerCase(Locale.ROOT)));
-            // Keep handler alive to maintain stream; periodic heartbeats detect disconnects.
             while (client.isOpen() && !Thread.currentThread().isInterrupted()) {
                 try {
                     Thread.sleep(15000);
@@ -119,7 +163,7 @@ public final class McpHttpServer {
                 if (!client.sendComment("keepalive")) break;
             }
         } catch (Exception e) {
-            // fall through to cleanup
+            // Cleanup below.
         } finally {
             if (client != null) {
                 sseClients.remove(client);
@@ -131,19 +175,20 @@ public final class McpHttpServer {
     }
 
     private void handleMcp(HttpExchange ex) throws IOException {
-        String method = ex.getRequestMethod();
-        if (!"POST".equalsIgnoreCase(method)) {
-            sendJson(ex, 405, Map.of("jsonrpc", "2.0", "error", Map.of("code", -32600, "message", "POST required"), "id", null));
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            sendJson(ex, 405, rpcError(null, -32600, "POST required"));
             return;
         }
         if (!authorize(ex)) return;
+
         String body;
         try (InputStream is = ex.getRequestBody()) {
-            body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            body = new String(readBounded(is, config.transport().maxBodyBytes()), StandardCharsets.UTF_8);
         } catch (Exception e) {
-            sendJson(ex, 400, rpcError(null, -32700, "Parse error"));
+            sendJson(ex, 413, rpcError(null, -32700, "Request too large"));
             return;
         }
+
         JsonElement rootEl;
         try {
             rootEl = JsonParser.parseString(body);
@@ -153,6 +198,10 @@ public final class McpHttpServer {
         }
         if (rootEl.isJsonArray()) {
             JsonArray arr = rootEl.getAsJsonArray();
+            if (arr.size() > config.transport().maxBatchSize()) {
+                sendJson(ex, 400, rpcError(null, -32600, "Batch too large"));
+                return;
+            }
             JsonArray out = new JsonArray();
             for (JsonElement el : arr) {
                 JsonObject resp = handleRpc(el.isJsonObject() ? el.getAsJsonObject() : new JsonObject(), ex);
@@ -180,7 +229,7 @@ public final class McpHttpServer {
         try {
             return switch (rpcMethod) {
                 case "initialize" -> rpcResult(id, handleInitialize(params));
-                case "notifications/initialized", "initialized" -> null; // notification
+                case "notifications/initialized", "initialized" -> null;
                 case "ping" -> rpcResult(id, Map.of());
                 case "tools/list" -> rpcResult(id, handleToolsList());
                 case "tools/call" -> rpcResult(id, handleToolsCall(params, caller(ex)));
@@ -189,7 +238,7 @@ public final class McpHttpServer {
             };
         } catch (Exception e) {
             logger.log(Level.WARNING, "MCP method error: " + rpcMethod, e);
-            return rpcError(id, -32000, "Server error: " + e.getMessage());
+            return rpcError(id, -32000, "Internal error");
         }
     }
 
@@ -224,9 +273,7 @@ public final class McpHttpServer {
         String name = optString(params, "name");
         JsonObject argsObj = params.has("arguments") && params.get("arguments").isJsonObject() ? params.getAsJsonObject("arguments") : new JsonObject();
         Map<String, Object> args = jsonObjectToMap(argsObj);
-        if (name == null || name.isBlank()) {
-            return toolCallResponse(false, "Missing tool name");
-        }
+        if (name == null || name.isBlank()) return toolCallResponse(false, "Missing tool name");
         Optional<McpTool> toolOpt = registry.get(name);
         if (toolOpt.isEmpty()) {
             audit.toolCall(caller, name, mode.get().name(), false, "not_found");
@@ -240,13 +287,13 @@ public final class McpHttpServer {
         }
         try {
             ToolResult result = tool.execute(new ToolContext(active, caller, args));
-            audit.toolCall(caller, name, active.name(), result.success(), result.success() ? "ok" : result.error());
+            audit.toolCall(caller, name, active.name(), result.success(), result.success() ? "ok" : "tool_error");
             Object payload = result.success() ? result.content() : Map.of("error", result.error());
             return toolCallResponse(result.success(), payload == null ? Map.of() : payload);
         } catch (Exception e) {
             logger.log(Level.WARNING, "Tool execution failed: " + name, e);
             audit.toolCall(caller, name, active.name(), false, "exception:" + e.getClass().getSimpleName());
-            return toolCallResponse(false, "Execution error: " + e.getMessage());
+            return toolCallResponse(false, "Execution error");
         }
     }
 
@@ -262,42 +309,136 @@ public final class McpHttpServer {
     }
 
     private boolean authorize(HttpExchange ex) throws IOException {
+        if (!checkRequestTarget(ex)) return false;
+
+        String ip = callerIp(ex);
+        FailureRecord record = failures.get(ip);
+        if (record != null) {
+            if (record.blockUntil > System.currentTimeMillis()) {
+                sendJson(ex, 429, Map.of("error", "too many failed authentication attempts"));
+                return false;
+            }
+            if (record.blockUntil > 0) failures.remove(ip);
+        }
+        pruneFailures();
+
         String provided = extractKey(ex);
         if (!keyManager.verify(provided)) {
             audit.authFailure(caller(ex));
+            recordFailure(ip);
+            ex.getResponseHeaders().set("WWW-Authenticate", "Bearer");
             sendJson(ex, 401, rpcError(null, -32001, "Unauthorized: missing or invalid access key"));
             return false;
         }
+        failures.remove(ip);
         return true;
     }
 
     private String extractKey(HttpExchange ex) {
         String auth = ex.getRequestHeaders().getFirst("Authorization");
         if (auth != null) {
-            if (auth.regionMatches(true, 0, "Bearer ", 0, 7)) return auth.substring(7).trim();
-            return auth.trim();
+            if (auth.length() > 7 && auth.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                return auth.substring(7);
+            }
+            return null; // Never treat a raw Authorization value as the key.
         }
-        String x = ex.getRequestHeaders().getFirst("X-Eden-Key");
-        if (x != null) return x.trim();
-        // query param fallback
-        URI uri = ex.getRequestURI();
-        if (uri != null && uri.getQuery() != null) {
-            for (String part : uri.getQuery().split("&")) {
-                int eq = part.indexOf('=');
-                if (eq > 0) {
-                    String k = part.substring(0, eq);
-                    if (k.equals("key") || k.equals("access_key")) return part.substring(eq + 1);
-                }
+        if (config.auth().allowLegacyHeader()) {
+            String x = ex.getRequestHeaders().getFirst("X-Eden-Key");
+            if (x != null) return x;
+        }
+        return null; // No query-string credentials.
+    }
+
+    private boolean checkRequestTarget(HttpExchange ex) throws IOException {
+        List<String> origins = ex.getRequestHeaders().get("Origin");
+        if (origins != null && !origins.isEmpty()) {
+            String originHost = null;
+            try {
+                URI u = URI.create(origins.get(0).trim());
+                originHost = u.getHost();
+            } catch (Exception ignored) {
+            }
+            if (originHost == null || !isAllowedHost(originHost)) {
+                logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origins.get(0));
+                sendJson(ex, 403, Map.of("error", "origin not allowed"));
+                return false;
             }
         }
-        return null;
+        String host = hostOf(ex.getRequestHeaders().getFirst("Host"));
+        if (host != null && !isAllowedHost(host)
+                && !(wildcardBind && !explicitHosts && (origins == null || origins.isEmpty()))) {
+            logger.warning("[SECURITY] Rejected request with disallowed Host: " + host);
+            sendJson(ex, 403, Map.of("error", "host not allowed"));
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isAllowedHost(String value) {
+        if (value == null) return false;
+        String host = value.toLowerCase(Locale.ROOT);
+        if (allowedHosts.contains(host)) return true;
+        return host.startsWith("[") && host.endsWith("]") && allowedHosts.contains(host.substring(1, host.length() - 1));
+    }
+
+    private static String hostOf(String hostHeader) {
+        if (hostHeader == null || hostHeader.isBlank()) return null;
+        String v = hostHeader.trim();
+        if (v.startsWith("[")) {
+            int end = v.indexOf(']');
+            return end > 0 ? v.substring(1, end) : v;
+        }
+        int first = v.indexOf(':');
+        if (first > 0 && first == v.lastIndexOf(':')) return v.substring(0, first);
+        return v;
+    }
+
+    private void recordFailure(String ip) {
+        FailureRecord rec = failures.computeIfAbsent(ip, k -> new FailureRecord());
+        rec.count++;
+        if (rec.count >= config.auth().maxFailures()) {
+            rec.blockUntil = System.currentTimeMillis() + config.auth().blockSeconds() * 1000L;
+            rec.count = 0;
+            logger.warning("[SECURITY] Auth failure limit reached for " + ip + "; blocking for "
+                    + config.auth().blockSeconds() + "s");
+        }
+    }
+
+    private void pruneFailures() {
+        if (failures.size() < 1000) return;
+        long now = System.currentTimeMillis();
+        failures.entrySet().removeIf(e -> e.getValue().blockUntil < now && e.getValue().count == 0);
+    }
+
+    private static final class FailureRecord {
+        private int count;
+        private long blockUntil;
     }
 
     private String caller(HttpExchange ex) {
         try {
-            String ra = ex.getRemoteAddress() == null ? "unknown" : String.valueOf(ex.getRemoteAddress());
-            return ra;
+            return ex.getRemoteAddress() == null ? "unknown" : String.valueOf(ex.getRemoteAddress());
         } catch (Exception e) { return "unknown"; }
+    }
+
+    private static String callerIp(HttpExchange ex) {
+        try {
+            return ex.getRemoteAddress().getAddress().getHostAddress();
+        } catch (Exception e) { return "unknown"; }
+    }
+
+    private static byte[] readBounded(InputStream is, int max) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(max, 8192));
+        byte[] buf = new byte[8192];
+        int total = 0;
+        while (true) {
+            int n = is.read(buf);
+            if (n < 0) break;
+            total += n;
+            if (total > max) throw new IOException("Request body too large");
+            out.write(buf, 0, n);
+        }
+        return out.toByteArray();
     }
 
     private void sendJson(HttpExchange ex, int status, Object obj) throws IOException {
@@ -371,26 +512,53 @@ public final class McpHttpServer {
     private SSLContext createSslContext(EdenConfig.TlsConfig tls, Path dataFolder) throws Exception {
         String mode = tls.mode() == null ? "self-signed" : tls.mode();
         if ("custom".equalsIgnoreCase(mode)) {
-            if (tls.keystorePath() != null && !tls.keystorePath().isBlank()) {
-                return sslFromKeystore(Path.of(tls.keystorePath()), tls.keystorePassword());
+            if (tls.keystorePath() == null || tls.keystorePath().isBlank()) {
+                throw new IllegalStateException("Custom TLS mode requires keystore-path");
             }
-            throw new IllegalStateException("Custom TLS mode requires keystore-path (PEM cert/key direct loading not implemented; provide keystore)");
+            Path ks = Path.of(tls.keystorePath());
+            PrivateFileUtil.requireOwnerOnly(ks, "TLS keystore");
+            char[] pass = tls.keystorePassword() == null ? new char[0] : tls.keystorePassword().toCharArray();
+            SSLContext ctx = sslFromKeystore(ks, pass, tls);
+            logFingerprint(ks, pass);
+            return ctx;
         }
-        // self-signed: expect/generate keystore in data folder
+
         Path ks = dataFolder.resolve("mcp-keystore.p12");
-        String pass = "edenmcp";
-        if (!Files.exists(ks)) {
-            boolean generated = tryGenerateSelfSigned(ks, pass, dataFolder);
-            if (!generated) {
-                throw new IllegalStateException("Failed to generate self-signed keystore. Provide keytool or configure custom TLS.");
+        Path passFile = dataFolder.resolve("mcp-keystore.pass");
+        char[] pass;
+        if (Files.exists(ks) && Files.exists(passFile)) {
+            PrivateFileUtil.requireOwnerOnly(ks, "TLS keystore");
+            PrivateFileUtil.requireOwnerOnly(passFile, "TLS keystore password file");
+            pass = Files.readString(passFile, StandardCharsets.UTF_8).trim().toCharArray();
+        } else {
+            if (Files.exists(ks)) {
+                logger.warning("[SECURITY] Self-signed keystore has no password file; regenerating it. "
+                        + "Clients should verify the new certificate fingerprint.");
+                Files.deleteIfExists(ks);
             }
+            pass = randomPassword();
+            boolean generated = tryGenerateSelfSigned(ks, new String(pass));
+            if (!generated) throw new IllegalStateException("Failed to generate self-signed keystore.");
+            Files.writeString(passFile, new String(pass) + System.lineSeparator(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            PrivateFileUtil.setOwnerOnly(passFile);
         }
-        return sslFromKeystore(ks, pass);
+        PrivateFileUtil.setOwnerOnly(ks);
+        SSLContext ctx = sslFromKeystore(ks, pass, tls);
+        logFingerprint(ks, pass);
+        return ctx;
     }
 
-    private boolean tryGenerateSelfSigned(Path ks, String pass, Path dataFolder) {
+    private static char[] randomPassword() {
+        byte[] raw = new byte[32];
+        RANDOM.nextBytes(raw);
+        return HexFormat.of().formatHex(raw).toCharArray();
+    }
+
+    private boolean tryGenerateSelfSigned(Path ks, String pass) {
         try {
-            // attempt keytool
+            Path parent = ks.getParent();
+            if (parent != null) Files.createDirectories(parent);
             String dname = "CN=EdenMcp, OU=EdenMcp, O=EdenMcp, L=Local, S=Local, C=XX";
             ProcessBuilder pb = new ProcessBuilder(
                     "keytool", "-genkeypair",
@@ -408,31 +576,42 @@ public final class McpHttpServer {
             Process p = pb.start();
             String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             int code = p.waitFor();
-            if (code == 0 && Files.exists(ks)) {
-                // fingerprint
-                try {
-                    ProcessBuilder fp = new ProcessBuilder("keytool", "-list", "-keystore", ks.toAbsolutePath().toString(), "-storepass", pass);
-                    fp.redirectErrorStream(true);
-                    Process pf = fp.start();
-                    String fpo = new String(pf.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                    pf.waitFor();
-                    logger.info("Generated self-signed MCP TLS certificate at " + ks + "\n" + fpo);
-                } catch (Exception e) {
-                    logger.info("Generated self-signed MCP TLS certificate at " + ks);
-                }
-                return true;
-            } else {
-                logger.warning("keytool failed to generate self-signed cert: " + out);
-                return false;
-            }
+            if (code == 0 && Files.exists(ks)) return true;
+            logger.warning("keytool could not generate a self-signed certificate (exit " + code + "): "
+                    + out.substring(0, Math.min(300, out.length())));
+            return false;
         } catch (Exception e) {
             logger.log(Level.WARNING, "Could not run keytool for self-signed cert generation", e);
             return false;
         }
     }
 
-    private SSLContext sslFromKeystore(Path ks, String password) throws Exception {
-        char[] pass = password == null ? new char[0] : password.toCharArray();
+    private void logFingerprint(Path ks, char[] pass) {
+        try {
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            try (InputStream is = Files.newInputStream(ks)) {
+                store.load(is, pass);
+            }
+            Enumeration<String> aliases = store.aliases();
+            while (aliases.hasMoreElements()) {
+                Certificate cert = store.getCertificate(aliases.nextElement());
+                if (cert == null) continue;
+                String hex = HexFormat.of().withUpperCase().formatHex(
+                        MessageDigest.getInstance("SHA-256").digest(cert.getEncoded()));
+                StringBuilder fp = new StringBuilder();
+                for (int i = 0; i < hex.length(); i += 2) {
+                    if (i > 0) fp.append(':');
+                    fp.append(hex, i, i + 2);
+                }
+                logger.info("MCP TLS certificate SHA-256 fingerprint: " + fp + " (pin this in your client)");
+                return;
+            }
+        } catch (Exception e) {
+            logger.warning("Could not compute MCP TLS certificate fingerprint: " + e.getMessage());
+        }
+    }
+
+    private SSLContext sslFromKeystore(Path ks, char[] pass, EdenConfig.TlsConfig tls) throws Exception {
         KeyStore store = KeyStore.getInstance("PKCS12");
         try (InputStream is = Files.newInputStream(ks)) {
             store.load(is, pass);
@@ -440,10 +619,38 @@ public final class McpHttpServer {
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(store, pass);
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(store);
+        if (tls.requireClientCert()) {
+            if (tls.truststorePath() == null || tls.truststorePath().isBlank()) {
+                throw new IllegalStateException("mcp.transport.tls.require-client-cert requires truststore-path");
+            }
+            Path trustPath = Path.of(tls.truststorePath());
+            PrivateFileUtil.requireOwnerOnly(trustPath, "TLS truststore");
+            char[] trustPass = tls.truststorePassword() == null || tls.truststorePassword().isBlank()
+                    ? pass : tls.truststorePassword().toCharArray();
+            KeyStore trust = KeyStore.getInstance(KeyStore.getDefaultType());
+            try (InputStream is = Files.newInputStream(trustPath)) {
+                trust.load(is, trustPass);
+            }
+            tmf.init(trust);
+        } else {
+            tmf.init(store);
+        }
         SSLContext ctx = SSLContext.getInstance("TLS");
         ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
         return ctx;
+    }
+
+    static SSLParameters hardenedSslParameters(SSLContext ctx, boolean requireClientCert) {
+        SSLParameters params = ctx.getSupportedSSLParameters();
+        List<String> suites = new ArrayList<>();
+        for (String suite : params.getCipherSuites()) {
+            if (suite.contains("_GCM_") || suite.contains("_CHACHA20_POLY1305_")) suites.add(suite);
+        }
+        params.setCipherSuites(suites.toArray(new String[0]));
+        params.setProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
+        params.setNeedClientAuth(requireClientCert);
+        params.setWantClientAuth(false);
+        return params;
     }
 
     public void broadcastModeChange(OperatingMode newMode) {

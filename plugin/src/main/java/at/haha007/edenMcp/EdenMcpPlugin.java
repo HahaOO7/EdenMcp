@@ -39,7 +39,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
         saveDefaultConfig();
         reloadConfig();
         FileConfiguration cfg = getConfig();
-        EdenConfig edenConfig = EdenConfig.from(cfg);
+        EdenConfig edenConfig = EdenConfig.from(cfg, getLogger());
 
         if (!edenConfig.enabled()) {
             getLogger().info("EdenMcp is disabled in config.");
@@ -54,6 +54,9 @@ public final class EdenMcpPlugin extends JavaPlugin {
             this.audit = new AuditLogger(getLogger());
             audit.setLogToolCalls(edenConfig.logToolCalls());
             audit.setLogModeChanges(edenConfig.logModeChanges());
+            if (!edenConfig.logToolCalls() || !edenConfig.logModeChanges()) {
+                getLogger().warning("[SECURITY] Audit logging is partially disabled; MCP activity will not be fully recorded.");
+            }
 
             AccessKeyManager keyManager = new AccessKeyManager(getDataFolder().toPath().resolve(".key"), getLogger());
             keyManager.loadOrCreate();
@@ -72,7 +75,8 @@ public final class EdenMcpPlugin extends JavaPlugin {
             hookManager.registerKnownHook(new LuckPermsHook(), edenConfig.hookEnabled().getOrDefault("luckperms", true));
 
             // Core tools
-            this.commandDispatchTool = new CommandDispatchTool(this, edenConfig.commandClassification(), getLogger());
+            this.commandDispatchTool = new CommandDispatchTool(this, edenConfig.commandClassification(),
+                    getLogger(), edenConfig.logVerbose());
             registry.register(new StatusTool());
             registry.register(new PluginsListTool());
             registry.register(new PlayersListTool());
@@ -80,10 +84,10 @@ public final class EdenMcpPlugin extends JavaPlugin {
             registry.register(new ModeGetTool(modeRef));
             registry.register(new ModeSetTool(modeRef, audit, m -> {
                 if (httpServer != null) httpServer.broadcastModeChange(m);
-            }));
+            }, edenConfig.policy().allowUnsafeAtRuntime()));
             registry.register(new ConfigGetTool(this::buildConfigSnapshot));
-            registry.register(new LogsReadTool(resolveLogPath()));
-            registry.register(new ChatSendTool(this, getLogger()));
+            registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate()));
+            registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose()));
             registry.register(commandDispatchTool);
 
             hookManager.enableAvailableHooks(getServer());
@@ -158,7 +162,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
     private String reloadPluginConfig() {
         try {
             reloadConfig();
-            EdenConfig edenConfig = EdenConfig.from(getConfig());
+            EdenConfig edenConfig = EdenConfig.from(getConfig(), getLogger());
             if (audit != null) {
                 audit.setLogToolCalls(edenConfig.logToolCalls());
                 audit.setLogModeChanges(edenConfig.logModeChanges());

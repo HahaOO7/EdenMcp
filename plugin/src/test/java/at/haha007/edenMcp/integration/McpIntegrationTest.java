@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,7 @@ public class McpIntegrationTest {
     private Thread outputDrainer;
     private Path serverDir;
     private String baseUrl;
+    private int mcpPort;
     private String accessKey;
     private HttpClient httpClient;
 
@@ -53,9 +55,9 @@ public class McpIntegrationTest {
         Path paperJarPath = Path.of(paperJar);
         assertTrue(Files.exists(paperJarPath), "Paper jar not found: " + paperJarPath);
 
-        // Clean dynamic state from previous runs but keep prepared files
         deleteIfExists(serverDir.resolve("plugins/EdenMcp/.key"));
         deleteIfExists(serverDir.resolve("plugins/EdenMcp/mcp-keystore.p12"));
+        deleteIfExists(serverDir.resolve("plugins/EdenMcp/mcp-keystore.pass"));
         deleteRecursively(serverDir.resolve("world"));
         deleteRecursively(serverDir.resolve("world_nether"));
         deleteRecursively(serverDir.resolve("world_the_end"));
@@ -85,6 +87,7 @@ public class McpIntegrationTest {
         outputDrainer.start();
 
         boolean isTls = "true".equalsIgnoreCase(tls);
+        mcpPort = Integer.parseInt(port);
         baseUrl = (isTls ? "https" : "http") + "://127.0.0.1:" + port;
         httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
@@ -94,8 +97,7 @@ public class McpIntegrationTest {
         waitForKey(Duration.ofMinutes(2));
         accessKey = Files.readString(serverDir.resolve("plugins/EdenMcp/.key"), StandardCharsets.UTF_8).trim();
         assertFalse(accessKey.isBlank(), "Access key is blank");
-
-        // Wait until MCP responds
+        assertTrue(accessKey.matches("[0-9a-f]{64}"), "Access key should be 64 lowercase hex characters");
         waitForMcpReady(Duration.ofMinutes(2));
     }
 
@@ -114,15 +116,12 @@ public class McpIntegrationTest {
                 serverProcess.waitFor(15, TimeUnit.SECONDS);
             }
         }
-        if (outputDrainer != null) {
-            outputDrainer.join(2000);
-        }
+        if (outputDrainer != null) outputDrainer.join(2000);
     }
 
     @Test
     @Order(1)
     void initializeAndAuth() throws Exception {
-        // unauthenticated should fail
         JsonObject unauth = rpcRaw(null, "initialize", new JsonObject(), 1, false);
         assertTrue(unauth.has("error"), "Expected auth error: " + unauth);
 
@@ -154,6 +153,58 @@ public class McpIntegrationTest {
     }
 
     @Test
+    @Order(3)
+    void authRejectsWrongRawAndLegacyCredentials() throws Exception {
+        Map<String, String> wrongKey = new LinkedHashMap<>();
+        wrongKey.put("Authorization", "Bearer " + "0".repeat(64));
+        HttpResponse<String> r1 = sendRaw("/mcp", pingBody(30), wrongKey);
+        assertEquals(401, r1.statusCode());
+        assertEquals("Bearer", r1.headers().firstValue("WWW-Authenticate").orElse(null));
+
+        Map<String, String> rawAuth = new LinkedHashMap<>();
+        rawAuth.put("Authorization", accessKey);
+        assertEquals(401, sendRaw("/mcp", pingBody(31), rawAuth).statusCode());
+
+        Map<String, String> legacy = new LinkedHashMap<>();
+        legacy.put("X-Eden-Key", accessKey);
+        assertEquals(401, sendRaw("/mcp", pingBody(32), legacy).statusCode());
+
+        HttpResponse<String> query = sendRaw("/mcp?key=" + accessKey + "&access_key=" + accessKey, pingBody(33), Map.of());
+        assertEquals(401, query.statusCode());
+    }
+
+    @Test
+    @Order(4)
+    void hostAndOriginAreValidated() throws Exception {
+        assertEquals(403, rawHttpStatus("evil.example", null));
+        assertEquals(403, rawHttpStatus("127.0.0.1:" + mcpPort, "https://evil.example"));
+        assertEquals(200, rawHttpStatus("127.0.0.1:" + mcpPort, null));
+    }
+
+    @Test
+    @Order(5)
+    void requestSizeAndBatchAreBounded() throws Exception {
+        Map<String, String> auth = Map.of("Authorization", "Bearer " + accessKey);
+        byte[] huge = new byte[1024 * 1024 + 1];
+        java.util.Arrays.fill(huge, (byte) 'a');
+        HttpRequest.Builder oversized = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/mcp"))
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessKey)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(huge));
+        assertEquals(413, httpClient.send(oversized.build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+
+        StringBuilder batch = new StringBuilder("[");
+        for (int i = 0; i < 21; i++) {
+            if (i > 0) batch.append(',');
+            batch.append("{\"jsonrpc\":\"2.0\",\"id\":").append(i).append(",\"method\":\"ping\"}");
+        }
+        batch.append(']');
+        assertEquals(400, sendRaw("/mcp", batch.toString(), auth).statusCode());
+    }
+
+    @Test
     @Order(10)
     void toolModeGet() throws Exception {
         JsonObject res = toolCall("eden.mode.get", new JsonObject(), 100);
@@ -174,13 +225,16 @@ public class McpIntegrationTest {
         assertFalse(toSafe.get("isError").getAsBoolean(), toSafe.toString());
         assertEquals("safe", payloadJson(toSafe).get("mode").getAsString());
 
-        // dispatch is visible in safe mode but defaults to unsafe classification and should be denied
-        JsonObject denied = toolCall("eden.command.dispatch", jsonObj("command", "say hello"), 113);
+        JsonArray safeTools = rpc("tools/list", new JsonObject(), 113)
+                .getAsJsonObject("result").getAsJsonArray("tools");
+        assertFalse(hasTool(safeTools, "eden.command.dispatch"), "dispatch must be hidden in safe mode");
+        assertFalse(hasTool(safeTools, "eden.mode.set"), "mode.set must be hidden in safe mode");
+        assertFalse(hasTool(safeTools, "eden.chat.send"), "chat.send must be hidden in safe mode");
+
+        JsonObject denied = toolCall("eden.command.dispatch", jsonObj("command", "say hello"), 114);
         assertTrue(denied.get("isError").getAsBoolean(), "Expected denial in safe mode: " + denied);
 
-        // recover to unsafe via classified-safe command dispatch (mode.set tool is not callable in safe mode)
-        JsonObject recover = toolCall("eden.command.dispatch", jsonObj("command", "mcp mode set unsafe"), 114);
-        assertFalse(recover.get("isError").getAsBoolean(), recover.toString());
+        setModeViaConsole("unsafe");
         assertEquals("unsafe", payloadJson(toolCall("eden.mode.get", new JsonObject(), 115)).get("mode").getAsString());
     }
 
@@ -232,6 +286,11 @@ public class McpIntegrationTest {
         assertTrue(payload.has("lines"), payload.toString());
         assertTrue(payload.has("count"), payload.toString());
         assertTrue(payload.get("count").getAsInt() >= 0, payload.toString());
+
+        JsonObject risky = new JsonObject();
+        risky.addProperty("filter", "(a+)+$");
+        risky.addProperty("regex", true);
+        assertTrue(toolCall("eden.logs.read", risky, 151).get("isError").getAsBoolean());
     }
 
     @Test
@@ -276,7 +335,6 @@ public class McpIntegrationTest {
         JsonObject res = toolCall("eden.luckperms.user.lookup", args, 190);
         assertNotNull(res, "Missing tool result");
         assertTrue(res.has("isError"), res.toString());
-        // Tool may load/create or return not-found depending on LuckPerms/storage behavior; either is a valid exercised call.
         assertTrue(res.has("content"), res.toString());
     }
 
@@ -301,6 +359,36 @@ public class McpIntegrationTest {
         assertTrue(payload.has("dispatched"), payload.toString());
         assertEquals("UNSAFE_ACTION", payload.get("classification").getAsString(), payload.toString());
         assertEquals("say edenmcp-integration", payload.get("command").getAsString(), payload.toString());
+
+        JsonObject chained = toolCall("eden.command.dispatch", jsonObj("command", "say hi; op Player"), 211);
+        assertTrue(chained.get("isError").getAsBoolean(), "chained commands must be rejected");
+    }
+
+    @Test
+    @Order(100)
+    void authFailuresAreThrottled() throws Exception {
+        Map<String, String> bad = new LinkedHashMap<>();
+        bad.put("Authorization", "Bearer " + "1".repeat(64));
+        for (int i = 0; i < 10; i++) {
+            assertEquals(401, sendRaw("/mcp", pingBody(300 + i), bad).statusCode());
+        }
+        assertEquals(429, sendRaw("/mcp", pingBody(400), Map.of("Authorization", "Bearer " + accessKey)).statusCode());
+    }
+
+    private void setModeViaConsole(String mode) throws Exception {
+        OutputStream os = serverProcess.getOutputStream();
+        os.write(("mcp mode set " + mode + "\n").getBytes(StandardCharsets.UTF_8));
+        os.flush();
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        while (System.nanoTime() < deadline) {
+            try {
+                JsonObject res = toolCall("eden.mode.get", new JsonObject(), 999);
+                if (mode.equals(payloadJson(res).get("mode").getAsString())) return;
+            } catch (Exception ignored) {
+            }
+            Thread.sleep(500);
+        }
+        fail("Mode was not changed to " + mode + " via console");
     }
 
     private void waitForMcpReady(Duration timeout) throws Exception {
@@ -321,9 +409,7 @@ public class McpIntegrationTest {
 
     private JsonObject rpc(String method, JsonObject params, int id) throws Exception {
         JsonObject resp = rpcRaw(accessKey, method, params, id, true);
-        if (resp.has("error")) {
-            fail("RPC error for " + method + ": " + resp);
-        }
+        if (resp.has("error")) fail("RPC error for " + method + ": " + resp);
         return resp;
     }
 
@@ -347,23 +433,53 @@ public class McpIntegrationTest {
         return false;
     }
 
+    private String pingBody(int id) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"ping\"}";
+    }
+
     private JsonObject rpcRaw(String key, String method, JsonObject params, int id, boolean withAuth) throws Exception {
         JsonObject req = new JsonObject();
         req.addProperty("jsonrpc", "2.0");
         req.addProperty("id", id);
         req.addProperty("method", method);
         req.add("params", params == null ? new JsonObject() : params);
-
-        HttpRequest.Builder b = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/mcp"))
-                .timeout(Duration.ofSeconds(15))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(req)));
-        if (withAuth && key != null) {
-            b.header("Authorization", "Bearer " + key);
-        }
-        HttpResponse<String> resp = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        Map<String, String> headers = new LinkedHashMap<>();
+        if (withAuth && key != null) headers.put("Authorization", "Bearer " + key);
+        HttpResponse<String> resp = sendRaw("/mcp", GSON.toJson(req), headers);
         return JsonParser.parseString(resp.body()).getAsJsonObject();
+    }
+
+    /** Raw socket request: java.net.http.HttpClient does not allow overriding the Host header. */
+    private int rawHttpStatus(String hostHeader, String originHeader) throws Exception {
+        String body = pingBody(500);
+        StringBuilder req = new StringBuilder()
+                .append("POST /mcp HTTP/1.1\r\n")
+                .append("Host: ").append(hostHeader).append("\r\n");
+        if (originHeader != null) req.append("Origin: ").append(originHeader).append("\r\n");
+        req.append("Authorization: Bearer ").append(accessKey).append("\r\n")
+                .append("Content-Type: application/json\r\n")
+                .append("Content-Length: ").append(body.getBytes(StandardCharsets.UTF_8).length).append("\r\n")
+                .append("Connection: close\r\n\r\n")
+                .append(body);
+        try (Socket socket = new Socket("127.0.0.1", mcpPort)) {
+            socket.setSoTimeout(15000);
+            socket.getOutputStream().write(req.toString().getBytes(StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+            String statusLine = br.readLine();
+            assertNotNull(statusLine, "No HTTP response");
+            return Integer.parseInt(statusLine.split(" ")[1]);
+        }
+    }
+
+    private HttpResponse<String> sendRaw(String path, String body, Map<String, String> headers) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/json");
+        headers.forEach(b::header);
+        b.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        return httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
 
     private static JsonObject jsonObj(String k, String v) {

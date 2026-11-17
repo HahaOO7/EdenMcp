@@ -36,6 +36,8 @@ public final class AuditLogger {
     }
 
     private String safe(String s) {
-        return s == null ? "?" : s.replaceAll("[\r\n]", " ");
+        if (s == null) return "?";
+        String cleaned = s.replaceAll("[\r\n]", " ");
+        return cleaned.length() > 200 ? cleaned.substring(0, 200) + "..." : cleaned;
     }
 }
