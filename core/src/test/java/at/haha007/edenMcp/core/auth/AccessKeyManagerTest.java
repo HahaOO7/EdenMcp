@@ -72,7 +72,7 @@ class AccessKeyManagerTest {
         manager.loadOrCreate();
 
         String key = readKey(keyFile);
-        assertFalse(key.equals("a".repeat(64)));
+        assertNotEquals("a".repeat(64), key);
         assertTrue(PrivateFileUtil.isOwnerOnly(keyFile));
     }
 

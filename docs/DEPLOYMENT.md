@@ -22,7 +22,7 @@ No extra configuration is required for these:
 
 - The access key is 256 bits of randomness, stored owner-only, compared in constant time, and accepted only as `Authorization: Bearer <key>`. Query-string keys and raw `Authorization` values are rejected. An invalid or world-readable `.key` file is quarantined as `.key.invalid` and replaced with a warning instead of breaking startup.
 - Failed authentication is throttled per source IP.
-- Host and Origin headers are validated (derived from the configured bind address); no CORS headers are sent by default.
+- Host and Origin headers are validated (derived from the configured bind address); no CORS headers are sent by default. With the default wildcard bind and no `allowed-hosts`, non-browser clients may use any `Host`, but browser requests are still constrained by the `Origin` check. Set `allowed-hosts` for strict Host enforcement.
 - Request bodies, JSON-RPC batches, SSE connections, and the HTTP worker pool are bounded.
 - TLS uses TLS 1.2/1.3 with AEAD ciphers only. The keystore and its random password file are owner-only. The certificate fingerprint is logged at every startup.
 - MCP calls use sessions: `initialize` returns an `Mcp-Session-Id` (header and result), and `tools/list`, `tools/call`, `resources/list`, and `initialized` require it. Sessions are bound to the key that created them and expire after idle timeout. `ping` needs no session. Most MCP clients handle this automatically.
@@ -37,7 +37,7 @@ Add these to `config.yml` only if your deployment needs them:
 mcp:
   transport:
     allowed-hosts: ["mcp.example.com"]   # strict Host allowlist
-    allowed-origins: ["https://app.example.com"]  # browser origins
+    allowed-origins: ["https://app.example.com"]  # exact browser origins; enables CORS echo/OPTIONS for these
     session-idle-seconds: 1800           # session idle expiry
     max-sessions: 100
     tls:

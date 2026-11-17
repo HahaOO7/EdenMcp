@@ -43,7 +43,6 @@ public final class McpHttpServer {
     private final EdenConfig config;
     private final AccessKeyManager keyManager;
     private final ToolRegistry registry;
-    private final HookManager hookManager;
     private final AuditLogger audit;
     private final Logger logger;
     private final AtomicReference<OperatingMode> mode;
@@ -69,6 +68,7 @@ public final class McpHttpServer {
             },
             new ThreadPoolExecutor.CallerRunsPolicy());
 
+    @SuppressWarnings("unused")
     public McpHttpServer(EdenConfig config,
                          AccessKeyManager keyManager,
                          ToolRegistry registry,
@@ -80,12 +80,11 @@ public final class McpHttpServer {
         this.config = config;
         this.keyManager = keyManager;
         this.registry = registry;
-        this.hookManager = hookManager;
         this.audit = audit;
         this.logger = logger;
         this.mode = mode;
         this.securityPolicy = new SecurityPolicy(config.policy().allowUnsafeAtRuntime());
-        // configSnapshotSupplier is reserved for future protocol extensions.
+        // hookManager and configSnapshotSupplier are reserved for future protocol extensions.
 
         String bind = config.transport().bind();
         this.wildcardBind = bind == null || bind.isBlank() || bind.equals("0.0.0.0")
@@ -169,7 +168,8 @@ public final class McpHttpServer {
         executor.shutdownNow();
     }
 
-    private void handleSse(HttpExchange ex) throws IOException {
+    @SuppressWarnings("BusyWait") // 15-second SSE keepalive cadence is intentional, not a tight spin.
+    private void handleSse(HttpExchange ex) {
         SseClient client = null;
         try {
             if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
@@ -206,7 +206,7 @@ public final class McpHttpServer {
                 }
                 // A revoked/expired key must not keep a long-lived stream alive.
                 if (credential == null || keyManager.authenticate(credential) == null) break;
-                if (!client.sendComment("keepalive")) break;
+                if (!client.sendKeepalive()) break;
             }
         } catch (Exception e) {
             // Cleanup below.
@@ -394,7 +394,7 @@ public final class McpHttpServer {
 
     private McpSession sessionFor(HttpExchange ex, Principal principal) {
         String sid = ex.getRequestHeaders().getFirst("Mcp-Session-Id");
-        if (sid == null || sid.isBlank()) sid = queryParam(ex.getRequestURI().getRawQuery(), "sessionId");
+        if (sid == null || sid.isBlank()) sid = sessionIdParam(ex.getRequestURI().getRawQuery());
         if (sid == null || sid.isBlank()) return null;
         McpSession session = sessions.get(sid);
         if (session == null) return null;
@@ -415,13 +415,13 @@ public final class McpHttpServer {
         sessions.values().removeIf(s -> s.expired(now, idle));
     }
 
-    private static String queryParam(String rawQuery, String key) {
+    private static String sessionIdParam(String rawQuery) {
         if (rawQuery == null || rawQuery.isBlank()) return null;
         for (String part : rawQuery.split("&")) {
             int eq = part.indexOf('=');
             if (eq < 0) continue;
             try {
-                if (URLDecoder.decode(part.substring(0, eq), StandardCharsets.UTF_8).equals(key)) {
+                if (URLDecoder.decode(part.substring(0, eq), StandardCharsets.UTF_8).equals("sessionId")) {
                     return URLDecoder.decode(part.substring(eq + 1), StandardCharsets.UTF_8);
                 }
             } catch (Exception ignored) {
@@ -489,8 +489,7 @@ public final class McpHttpServer {
             return null; // Never treat a raw Authorization value as the key.
         }
         if (config.auth().allowLegacyHeader()) {
-            String x = ex.getRequestHeaders().getFirst("X-Eden-Key");
-            if (x != null) return x;
+            return ex.getRequestHeaders().getFirst("X-Eden-Key");
         }
         return null; // No query-string credentials.
     }
@@ -513,7 +512,7 @@ public final class McpHttpServer {
     private boolean checkRequestTarget(HttpExchange ex) throws IOException {
         List<String> origins = ex.getRequestHeaders().get("Origin");
         if (origins != null && !origins.isEmpty()) {
-            String origin = origins.get(0).trim();
+            String origin = origins.getFirst().trim();
             if (explicitOrigins) {
                 if (!allowedOrigins.contains(origin)) {
                     logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
@@ -530,7 +529,7 @@ public final class McpHttpServer {
                     originHost = u.getHost();
                 } catch (Exception ignored) {
                 }
-                if (originHost == null || !isAllowedHost(originHost)) {
+                if (!isAllowedHost(originHost)) {
                     logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
                     sendJson(ex, 403, Map.of("error", "origin not allowed"));
                     return false;
@@ -567,7 +566,7 @@ public final class McpHttpServer {
     }
 
     private void recordFailure(String ip) {
-        FailureRecord rec = failures.computeIfAbsent(ip, k -> new FailureRecord());
+        FailureRecord rec = failures.computeIfAbsent(ip, ignored -> new FailureRecord());
         rec.count++;
         if (rec.count >= config.auth().maxFailures()) {
             rec.blockUntil = System.currentTimeMillis() + config.auth().blockSeconds() * 1000L;
@@ -650,7 +649,6 @@ public final class McpHttpServer {
         try { return o.get(key).getAsString(); } catch (Exception e) { return null; }
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> jsonObjectToMap(JsonObject obj) {
         if (obj == null) return Map.of();
         Map<String, Object> out = new LinkedHashMap<>();
@@ -734,12 +732,18 @@ public final class McpHttpServer {
     }
 
     private boolean tryGenerateSelfSigned(Path ks, String pass) {
+        Path keytool = Path.of(System.getProperty("java.home"), "bin", "keytool");
+        if (!Files.isExecutable(keytool)) {
+            logger.warning("keytool is not available at " + keytool
+                    + "; cannot generate a self-signed certificate.");
+            return false;
+        }
         try {
             Path parent = ks.getParent();
             if (parent != null) Files.createDirectories(parent);
             String dname = "CN=EdenMcp, OU=EdenMcp, O=EdenMcp, L=Local, S=Local, C=XX";
             ProcessBuilder pb = new ProcessBuilder(
-                    "keytool", "-genkeypair",
+                    keytool.toString(), "-genkeypair",
                     "-alias", "edenmcp",
                     "-keyalg", "RSA",
                     "-keysize", "2048",
@@ -757,6 +761,10 @@ public final class McpHttpServer {
             if (code == 0 && Files.exists(ks)) return true;
             logger.warning("keytool could not generate a self-signed certificate (exit " + code + "): "
                     + out.substring(0, Math.min(300, out.length())));
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.log(Level.WARNING, "Interrupted while generating a self-signed certificate", e);
             return false;
         } catch (Exception e) {
             logger.log(Level.WARNING, "Could not run keytool for self-signed cert generation", e);
@@ -846,7 +854,7 @@ public final class McpHttpServer {
         private final Thread owner;
         private volatile boolean open = true;
 
-        SseClient(HttpExchange exchange, String principalId) throws IOException {
+        SseClient(HttpExchange exchange, String principalId) {
             this.exchange = exchange;
             this.os = exchange.getResponseBody();
             this.principalId = principalId;
@@ -855,23 +863,21 @@ public final class McpHttpServer {
 
         String principalId() { return principalId; }
 
-        synchronized boolean sendEvent(String event, Object data) {
-            if (!open) return false;
+        synchronized void sendEvent(String event, Object data) {
+            if (!open) return;
             try {
                 String payload = "event: " + event + "\n" + "data: " + GSON.toJson(data) + "\n\n";
                 os.write(payload.getBytes(StandardCharsets.UTF_8));
                 os.flush();
-                return true;
             } catch (Exception e) {
                 close();
-                return false;
             }
         }
 
-        synchronized boolean sendComment(String comment) {
+        synchronized boolean sendKeepalive() {
             if (!open) return false;
             try {
-                os.write((":" + comment + "\n\n").getBytes(StandardCharsets.UTF_8));
+                os.write(":keepalive\n\n".getBytes(StandardCharsets.UTF_8));
                 os.flush();
                 return true;
             } catch (Exception e) {

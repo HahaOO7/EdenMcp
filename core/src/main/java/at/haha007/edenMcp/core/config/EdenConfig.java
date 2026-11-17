@@ -99,7 +99,7 @@ public record EdenConfig(
 
         List<CommandClassification.Rule> rules = new ArrayList<>();
         List<Map<?, ?>> mapList = cfg.getMapList("commands.classification");
-        if (mapList == null || mapList.isEmpty()) {
+        if (mapList.isEmpty()) {
             List<?> list = cfg.getList("commands.classification");
             mapList = new ArrayList<>();
             if (list != null) {

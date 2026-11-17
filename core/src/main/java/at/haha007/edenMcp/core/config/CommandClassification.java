@@ -5,9 +5,15 @@ import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import java.util.List;
 import java.util.regex.Pattern;
 
-public final class CommandClassification {
+public record CommandClassification(List<Rule> rules) {
+    public CommandClassification {
+        rules = rules == null ? List.of() : List.copyOf(rules);
+    }
+
     /** Rules are always anchored to the whole normalized command; first match wins. */
     public record Rule(CapabilityLevel level, Pattern pattern, String rawPattern) {
+        // The group is required to anchor alternation in user-supplied patterns.
+        @SuppressWarnings("RegExpUnnecessaryNonCapturingGroup")
         public static Rule of(CapabilityLevel level, String rawPattern) {
             String raw = rawPattern == null ? "" : rawPattern;
             String effective = (raw.startsWith("^") && raw.endsWith("$")) ? raw : "^(?:" + raw + ")$";
@@ -17,12 +23,6 @@ public final class CommandClassification {
         public boolean isAnchored() {
             return rawPattern.startsWith("^") && rawPattern.endsWith("$");
         }
-    }
-
-    private final List<Rule> rules;
-
-    public CommandClassification(List<Rule> rules) {
-        this.rules = rules == null ? List.of() : List.copyOf(rules);
     }
 
     /**
@@ -59,8 +59,6 @@ public final class CommandClassification {
         }
         return CapabilityLevel.UNSAFE_ACTION;
     }
-
-    public List<Rule> rules() { return rules; }
 
     public static CommandClassification empty() { return new CommandClassification(List.of()); }
 }

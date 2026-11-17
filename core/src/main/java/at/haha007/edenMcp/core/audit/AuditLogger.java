@@ -1,7 +1,6 @@
 package at.haha007.edenMcp.core.audit;
 
 import java.time.Instant;
-import java.util.Map;
 import java.util.logging.Logger;
 
 public final class AuditLogger {

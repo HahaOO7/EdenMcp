@@ -1,8 +1,8 @@
 package at.haha007.edenMcp.core.hook;
 
+import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import org.bukkit.Server;
-import org.bukkit.plugin.Plugin;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -76,7 +76,7 @@ public final class HookManager {
                     m.put("available", s.available());
                     m.put("enabled", s.enabled());
                     m.put("tools", s.enabled() && s.contribution() != null
-                            ? s.contribution().tools().stream().map(t -> t.name()).toList() : List.of());
+                            ? s.contribution().tools().stream().map(McpTool::name).toList() : List.of());
                     return m;
                 })
                 .toList();

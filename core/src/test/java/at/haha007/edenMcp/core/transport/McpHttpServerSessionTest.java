@@ -20,7 +20,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.Socket;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -71,7 +71,7 @@ class McpHttpServerSessionTest {
     private record Resp(int status, String sessionHeader, JsonObject body) {}
 
     private Resp post(String body, String authKey, String sessionId) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + server.port() + "/mcp").openConnection();
+        HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/mcp").toURL().openConnection();
         c.setRequestMethod("POST");
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/json");

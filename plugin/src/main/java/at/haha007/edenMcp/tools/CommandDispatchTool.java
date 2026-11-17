@@ -72,6 +72,10 @@ public final class CommandDispatchTool implements McpTool {
             });
             boolean ok = future.get(10, TimeUnit.SECONDS);
             return ToolResult.ok(Map.of("dispatched", ok, "classification", effective.name(), "command", normalized));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.log(java.util.logging.Level.WARNING, "Command dispatch interrupted for " + context.callerId(), e);
+            return ToolResult.error("Dispatch interrupted");
         } catch (Exception e) {
             logger.log(java.util.logging.Level.WARNING, "Command dispatch failed for " + context.callerId(), e);
             return ToolResult.error("Dispatch failed");

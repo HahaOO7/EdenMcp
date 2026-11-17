@@ -94,9 +94,10 @@ class McpHttpServerCorsTest {
             String line;
             while ((line = br.readLine()) != null && !line.isEmpty()) {
                 String lower = line.toLowerCase(Locale.ROOT);
-                if (lower.startsWith("access-control-allow-origin:")) allowOrigin = line.substring(line.indexOf(':') + 1).trim();
-                else if (lower.startsWith("vary:")) vary = line.substring(line.indexOf(':') + 1).trim();
-                else if (lower.startsWith("access-control-allow-headers:")) allowHeaders = line.substring(line.indexOf(':') + 1).trim();
+                String value = line.substring(line.indexOf(':') + 1).trim();
+                if (lower.startsWith("access-control-allow-origin:")) allowOrigin = value;
+                else if (lower.startsWith("vary:")) vary = value;
+                else if (lower.startsWith("access-control-allow-headers:")) allowHeaders = value;
             }
             return new Resp(code, allowOrigin, vary, allowHeaders);
         }

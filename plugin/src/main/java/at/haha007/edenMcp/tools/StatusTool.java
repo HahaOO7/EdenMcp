@@ -29,7 +29,7 @@ public final class StatusTool implements McpTool {
         out.put("uptimeMs", ManagementFactory.getRuntimeMXBean().getUptime());
         try {
             double[] tps = Bukkit.getTPS();
-            out.put("tps", List.of(tps.length > 0 ? tps[0] : null, tps.length > 1 ? tps[1] : null, tps.length > 2 ? tps[2] : null));
+            out.put("tps", Arrays.asList(tps.length > 0 ? tps[0] : null, tps.length > 1 ? tps[1] : null, tps.length > 2 ? tps[2] : null));
         } catch (Throwable t) {
             out.put("tps", null);
         }

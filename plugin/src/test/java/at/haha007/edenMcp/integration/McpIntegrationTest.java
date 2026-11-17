@@ -24,6 +24,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@SuppressWarnings("BusyWait") // Bounded polling helpers wait for an external server process; deliberate sleeps.
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class McpIntegrationTest {
@@ -94,7 +95,7 @@ public class McpIntegrationTest {
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
 
-        waitForPort("127.0.0.1", Integer.parseInt(port), Duration.ofMinutes(3));
+        waitForLocalPort(Integer.parseInt(port), Duration.ofMinutes(3));
         waitForKey(Duration.ofMinutes(2));
         accessKey = Files.readString(serverDir.resolve("plugins/EdenMcp/.key"), StandardCharsets.UTF_8).trim();
         assertFalse(accessKey.isBlank(), "Access key is blank");
@@ -258,7 +259,7 @@ public class McpIntegrationTest {
         JsonObject denied = toolCall("eden.command.dispatch", jsonObj("command", "say hello"), 114);
         assertTrue(denied.get("isError").getAsBoolean(), "Expected denial in safe mode: " + denied);
 
-        setModeViaConsole("unsafe");
+        setUnsafeModeViaConsole();
         assertEquals("unsafe", payloadJson(toolCall("eden.mode.get", new JsonObject(), 115)).get("mode").getAsString());
     }
 
@@ -440,7 +441,8 @@ public class McpIntegrationTest {
         assertEquals(429, sendRaw("/mcp", pingBody(400), Map.of("Authorization", "Bearer " + accessKey)).statusCode());
     }
 
-    private void setModeViaConsole(String mode) throws Exception {
+    private void setUnsafeModeViaConsole() throws Exception {
+        String mode = "unsafe";
         OutputStream os = serverProcess.getOutputStream();
         os.write(("mcp mode set " + mode + "\n").getBytes(StandardCharsets.UTF_8));
         os.flush();
@@ -558,12 +560,13 @@ public class McpIntegrationTest {
         return o;
     }
 
-    private static void waitForPort(String host, int port, Duration timeout) throws Exception {
+    private static void waitForLocalPort(int port, Duration timeout) throws Exception {
+        String host = "127.0.0.1";
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
-            try (Socket s = new Socket(host, port)) {
+            try (Socket ignored = new Socket(host, port)) {
                 return;
-            } catch (Exception ignored) {
+            } catch (Exception ignoredException) {
             }
             Thread.sleep(1000);
         }

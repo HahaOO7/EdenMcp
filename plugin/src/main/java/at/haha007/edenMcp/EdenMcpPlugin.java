@@ -23,7 +23,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -140,7 +139,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
                             }))
                             .then(Commands.literal("set")
                                     .then(Commands.argument("mode", StringArgumentType.word())
-                                            .suggests((c, b) -> {
+                                            .suggests((ignored, b) -> {
                                                 b.suggest("safe");
                                                 b.suggest("moderate");
                                                 b.suggest("unsafe");
@@ -221,8 +220,8 @@ public final class EdenMcpPlugin extends JavaPlugin {
         // Common Paper/Spigot locations
         Path p = Path.of("logs", "latest.log");
         if (Files.exists(p)) return p.toAbsolutePath();
-        Path p2 = getServer().getWorldContainer() != null ? getServer().getWorldContainer().toPath().resolve("logs").resolve("latest.log") : null;
-        if (p2 != null && Files.exists(p2)) return p2.toAbsolutePath();
+        Path p2 = getServer().getWorldContainer().toPath().resolve("logs").resolve("latest.log");
+        if (Files.exists(p2)) return p2.toAbsolutePath();
         return p.toAbsolutePath();
     }
 
@@ -242,28 +241,29 @@ public final class EdenMcpPlugin extends JavaPlugin {
         return root;
     }
 
-    @SuppressWarnings("unchecked")
     private Object sectionToMap(Object obj) {
-        if (obj == null) return null;
-        if (obj instanceof org.bukkit.configuration.ConfigurationSection sec) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            for (String k : sec.getKeys(false)) {
-                Object v = sec.get(k);
-                m.put(k, sectionToMap(v));
+        return switch (obj) {
+            case null -> null;
+            case org.bukkit.configuration.ConfigurationSection sec -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                for (String k : sec.getKeys(false)) {
+                    Object v = sec.get(k);
+                    m.put(k, sectionToMap(v));
+                }
+                // include values that might not be sections but lists/maps
+                yield m;
             }
-            // include values that might not be sections but lists/maps
-            return m;
-        }
-        if (obj instanceof java.util.List<?> list) {
-            java.util.List<Object> out = new java.util.ArrayList<>();
-            for (Object i : list) out.add(sectionToMap(i));
-            return out;
-        }
-        if (obj instanceof Map<?, ?> map) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : map.entrySet()) out.put(String.valueOf(e.getKey()), sectionToMap(e.getValue()));
-            return out;
-        }
-        return obj;
+            case java.util.List<?> list -> {
+                java.util.List<Object> out = new java.util.ArrayList<>();
+                for (Object i : list) out.add(sectionToMap(i));
+                yield out;
+            }
+            case Map<?, ?> map -> {
+                Map<String, Object> out = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> e : map.entrySet()) out.put(String.valueOf(e.getKey()), sectionToMap(e.getValue()));
+                yield out;
+            }
+            default -> obj;
+        };
     }
 }

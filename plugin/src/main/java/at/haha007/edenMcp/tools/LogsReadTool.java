@@ -19,7 +19,9 @@ public final class LogsReadTool implements McpTool {
     private static final int MAX_LIMIT = 500;
     private static final int MAX_SCAN_BYTES = 1024 * 1024;
     private static final int MAX_PATTERN_LENGTH = 200;
-    private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)]*[+*][^)]*\\))[+*{]");
+    // The first character class excludes the quantifier characters, so the group
+    // cannot be matched at multiple positions - avoids super-linear backtracking.
+    private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
     private final Path logFile;
     private final boolean requireModerate;
 
@@ -50,8 +52,8 @@ public final class LogsReadTool implements McpTool {
         if (logFile == null || !Files.exists(logFile)) return ToolResult.error("Log file not available");
         int limit = DEFAULT_LIMIT;
         Object lim = context.arguments().get("limit");
-        if (lim instanceof Number n) limit = Math.max(1, Math.min(MAX_LIMIT, n.intValue()));
-        else if (lim instanceof String s) try { limit = Math.max(1, Math.min(MAX_LIMIT, Integer.parseInt(s))); } catch (Exception ignored) {}
+        if (lim instanceof Number n) limit = Math.clamp(n.intValue(), 1, MAX_LIMIT);
+        else if (lim instanceof String s) try { limit = Math.clamp(Integer.parseInt(s), 1, MAX_LIMIT); } catch (Exception ignored) {}
 
         String filter = context.arguments().get("filter") == null ? null : String.valueOf(context.arguments().get("filter"));
         boolean regex = Boolean.TRUE.equals(context.arguments().get("regex")) || "true".equals(String.valueOf(context.arguments().get("regex")));
@@ -66,17 +68,17 @@ public final class LogsReadTool implements McpTool {
             }
         }
         try {
-            List<String> lines = readTailLines(logFile, limit, filter, pattern, MAX_SCAN_BYTES);
+            List<String> lines = readTailLines(logFile, limit, filter, pattern);
             return ToolResult.ok(Map.of("file", logFile.toString(), "lines", lines, "count", lines.size()));
         } catch (IOException e) {
             return ToolResult.error("Failed to read logs");
         }
     }
 
-    private static List<String> readTailLines(Path file, int limit, String filter, Pattern pattern, int maxScanBytes) throws IOException {
+    private static List<String> readTailLines(Path file, int limit, String filter, Pattern pattern) throws IOException {
         long length = Files.size(file);
         if (length <= 0) return List.of();
-        int toRead = (int) Math.min(length, (long) maxScanBytes);
+        int toRead = (int) Math.min(length, MAX_SCAN_BYTES);
         byte[] buf = new byte[toRead];
         try (RandomAccessFile raf = new RandomAccessFile(file.toFile(), "r")) {
             raf.seek(length - toRead);

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import javax.net.ssl.*;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -88,9 +88,9 @@ class McpHttpServerTlsTest {
                 public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             }}, new SecureRandom());
 
-            HttpsURLConnection conn = (HttpsURLConnection) new URL("https://127.0.0.1:" + port + "/mcp").openConnection();
+            HttpsURLConnection conn = (HttpsURLConnection) URI.create("https://127.0.0.1:" + port + "/mcp").toURL().openConnection();
             conn.setSSLSocketFactory(trustAll.getSocketFactory());
-            conn.setHostnameVerifier((hostname, session) -> true);
+            conn.setHostnameVerifier((ignoredHost, ignoredSession) -> true);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
@@ -187,9 +187,9 @@ class McpHttpServerTlsTest {
             SSLContext noClient = SSLContext.getInstance("TLS");
             noClient.init(null, new TrustManager[]{trustAll}, new SecureRandom());
             assertThrows(java.io.IOException.class, () -> {
-                HttpsURLConnection conn = (HttpsURLConnection) new URL(url).openConnection();
+                HttpsURLConnection conn = (HttpsURLConnection) URI.create(url).toURL().openConnection();
                 conn.setSSLSocketFactory(noClient.getSocketFactory());
-                conn.setHostnameVerifier((h, s) -> true);
+                conn.setHostnameVerifier((ignoredHost, ignoredSession) -> true);
                 conn.setRequestMethod("POST");
                 conn.setDoOutput(true);
                 conn.setRequestProperty("Authorization", "Bearer " + key);
@@ -200,9 +200,9 @@ class McpHttpServerTlsTest {
             // A connection presenting the trusted client certificate succeeds.
             SSLContext withClient = SSLContext.getInstance("TLS");
             withClient.init(kmf.getKeyManagers(), new TrustManager[]{trustAll}, new SecureRandom());
-            HttpsURLConnection conn = (HttpsURLConnection) new URL(url).openConnection();
+            HttpsURLConnection conn = (HttpsURLConnection) URI.create(url).toURL().openConnection();
             conn.setSSLSocketFactory(withClient.getSocketFactory());
-            conn.setHostnameVerifier((h, s) -> true);
+            conn.setHostnameVerifier((ignoredHost, ignoredSession) -> true);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");

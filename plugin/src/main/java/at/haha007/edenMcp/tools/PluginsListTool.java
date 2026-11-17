@@ -25,7 +25,7 @@ public final class PluginsListTool implements McpTool {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("name", p.getName());
             m.put("enabled", p.isEnabled());
-            m.put("version", p.getPluginMeta() != null ? p.getPluginMeta().getVersion() : "unknown");
+            m.put("version", p.getPluginMeta().getVersion());
             list.add(m);
         }
         return ToolResult.ok(Map.of("plugins", list));

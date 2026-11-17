@@ -1,7 +1,6 @@
 package at.haha007.edenMcp.core.config;
 
 import java.util.*;
-import java.util.regex.Pattern;
 
 public final class ConfigRedactor {
     private static final Set<String> SENSITIVE_KEYS = Set.of(
@@ -15,7 +14,6 @@ public final class ConfigRedactor {
 
     private ConfigRedactor() {}
 
-    @SuppressWarnings("unchecked")
     public static Object redact(Object value, String path) {
         String lowerPath = path == null ? "" : path.toLowerCase(Locale.ROOT);
         if (isDeniedPath(lowerPath)) {
@@ -26,8 +24,8 @@ public final class ConfigRedactor {
             for (Map.Entry<?, ?> e : map.entrySet()) {
                 String k = String.valueOf(e.getKey());
                 String childPath = path == null || path.isEmpty() ? k : path + "." + k;
-                if (isSensitiveKeyName(k) && !isAllowedException(childPath)) {
-                    out.put(k, redactSensitiveLeaf(e.getValue(), childPath));
+                if (isSensitiveKeyName(k)) {
+                    out.put(k, redactSensitiveLeaf(e.getValue()));
                 } else {
                     out.put(k, redact(e.getValue(), childPath));
                 }
@@ -43,8 +41,8 @@ public final class ConfigRedactor {
         }
         // heuristic on key name already handled at map level; if path itself sensitive
         String leaf = leafName(lowerPath);
-        if (isSensitiveKeyName(leaf) && !isAllowedException(lowerPath)) {
-            return redactSensitiveLeaf(value, lowerPath);
+        if (isSensitiveKeyName(leaf)) {
+            return redactSensitiveLeaf(value);
         }
         return value;
     }
@@ -73,12 +71,7 @@ public final class ConfigRedactor {
         return false;
     }
 
-    private static boolean isAllowedException(String path) {
-        // narrowly scoped allow-through for known non-secret collisions if any
-        return false;
-    }
-
-    private static Object redactSensitiveLeaf(Object value, String path) {
+    private static Object redactSensitiveLeaf(Object value) {
         if (value == null) return null;
         if (value instanceof String s && s.isBlank()) return "";
         // report presence/status only for secret stores; mask simple values
