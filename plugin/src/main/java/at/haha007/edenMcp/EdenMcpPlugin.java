@@ -2,10 +2,12 @@ package at.haha007.edenMcp;
 
 import at.haha007.edenMcp.core.audit.AuditLogger;
 import at.haha007.edenMcp.core.auth.AccessKeyManager;
+import at.haha007.edenMcp.core.auth.Principal;
 import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.hook.HookContext;
 import at.haha007.edenMcp.core.hook.HookManager;
 import at.haha007.edenMcp.core.mode.OperatingMode;
+import at.haha007.edenMcp.core.policy.SecurityPolicy;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import at.haha007.edenMcp.core.transport.McpHttpServer;
 import at.haha007.edenMcp.hooks.luckperms.LuckPermsHook;
@@ -31,6 +33,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
     private McpHttpServer httpServer;
     private HookManager hookManager;
     private AuditLogger audit;
+    private AccessKeyManager keyManager;
     private CommandDispatchTool commandDispatchTool;
     private final AtomicReference<OperatingMode> modeRef = new AtomicReference<>(OperatingMode.SAFE);
 
@@ -58,8 +61,14 @@ public final class EdenMcpPlugin extends JavaPlugin {
                 getLogger().warning("[SECURITY] Audit logging is partially disabled; MCP activity will not be fully recorded.");
             }
 
-            AccessKeyManager keyManager = new AccessKeyManager(getDataFolder().toPath().resolve(".key"), getLogger());
+            this.keyManager = new AccessKeyManager(
+                    getDataFolder().toPath().resolve(".key"),
+                    getLogger(),
+                    edenConfig.auth().rotationGraceSeconds(),
+                    edenConfig.auth().multiKeyDirectory().isBlank() ? null : Path.of(edenConfig.auth().multiKeyDirectory()));
             keyManager.loadOrCreate();
+
+            SecurityPolicy securityPolicy = new SecurityPolicy(edenConfig.policy().allowUnsafeAtRuntime());
 
             modeRef.set(edenConfig.startupMode());
             getLogger().info("EdenMcp startup mode: " + modeRef.get());
@@ -84,7 +93,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
             registry.register(new ModeGetTool(modeRef));
             registry.register(new ModeSetTool(modeRef, audit, m -> {
                 if (httpServer != null) httpServer.broadcastModeChange(m);
-            }, edenConfig.policy().allowUnsafeAtRuntime()));
+            }, securityPolicy));
             registry.register(new ConfigGetTool(this::buildConfigSnapshot));
             registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate()));
             registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose()));
@@ -150,6 +159,31 @@ public final class EdenMcpPlugin extends JavaPlugin {
                                                 ctx.getSource().getSender().sendMessage(Component.text("EdenMcp mode changed: " + prev.name().toLowerCase(Locale.ROOT) + " -> " + next.name().toLowerCase(Locale.ROOT)));
                                                 return Command.SINGLE_SUCCESS;
                                             }))))
+                    .then(Commands.literal("key")
+                            .then(Commands.literal("rotate").executes(ctx -> {
+                                try {
+                                    var result = keyManager.rotate();
+                                    int closed = httpServer != null
+                                            ? httpServer.invalidateSessionsForPrincipal(result.invalidatedPrincipalId()) : 0;
+                                    if (audit != null) {
+                                        audit.keyRotate("command:" + ctx.getSource().getSender().getName(), Principal.PRIMARY_ID);
+                                    }
+                                    ctx.getSource().getSender().sendMessage(Component.text(
+                                            "MCP access key rotated. New key: "
+                                                    + getDataFolder().toPath().resolve(".key").toAbsolutePath()
+                                                    + (result.graceSeconds() > 0
+                                                            ? " Previous key valid for " + result.graceSeconds()
+                                                                    + "s (in-memory grace only)." : "")));
+                                    ctx.getSource().getSender().sendMessage(Component.text(
+                                            "Closed " + closed + " existing MCP session(s). Update clients and verify the TLS fingerprint."));
+                                    return Command.SINGLE_SUCCESS;
+                                } catch (Exception e) {
+                                    getLogger().log(Level.WARNING, "Failed to rotate MCP access key", e);
+                                    ctx.getSource().getSender().sendMessage(Component.text(
+                                            "Failed to rotate MCP access key: " + e.getMessage()));
+                                    return 0;
+                                }
+                            })))
                     .then(Commands.literal("reload").executes(ctx -> {
                         String result = reloadPluginConfig();
                         ctx.getSource().getSender().sendMessage(Component.text(result));

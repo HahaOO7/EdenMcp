@@ -35,6 +35,7 @@ public class McpIntegrationTest {
     private String baseUrl;
     private int mcpPort;
     private String accessKey;
+    private volatile String sessionId;
     private HttpClient httpClient;
 
     @BeforeAll
@@ -205,6 +206,29 @@ public class McpIntegrationTest {
     }
 
     @Test
+    @Order(6)
+    void sessionIsRequiredForToolRequests() throws Exception {
+        Map<String, String> auth = Map.of("Authorization", "Bearer " + accessKey);
+
+        HttpResponse<String> noSession = sendRaw("/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/list\"}", auth);
+        assertEquals(200, noSession.statusCode());
+        JsonObject body = JsonParser.parseString(noSession.body()).getAsJsonObject();
+        assertTrue(body.has("error"), "tools/list without a session must be rejected: " + body);
+        assertEquals(-32000, body.getAsJsonObject("error").get("code").getAsInt());
+
+        HttpResponse<String> badSession = sendRaw("/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}",
+                Map.of("Authorization", "Bearer " + accessKey, "Mcp-Session-Id", "0".repeat(32)));
+        assertTrue(JsonParser.parseString(badSession.body()).getAsJsonObject().has("error"));
+
+        // ping is a connectivity check and needs no session.
+        HttpResponse<String> ping = sendRaw("/mcp", pingBody(8), auth);
+        assertEquals(200, ping.statusCode());
+        assertFalse(JsonParser.parseString(ping.body()).getAsJsonObject().has("error"));
+    }
+
+    @Test
     @Order(10)
     void toolModeGet() throws Exception {
         JsonObject res = toolCall("eden.mode.get", new JsonObject(), 100);
@@ -365,6 +389,47 @@ public class McpIntegrationTest {
     }
 
     @Test
+    @Order(50)
+    void keyRotationInvalidatesSessionsAndIssuesNewKey() throws Exception {
+        String oldKey = accessKey;
+        String oldSession = sessionId;
+        assertNotNull(oldSession, "A session should have been established by initialize");
+
+        OutputStream os = serverProcess.getOutputStream();
+        os.write("mcp key rotate\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+
+        Path keyFile = serverDir.resolve("plugins/EdenMcp/.key");
+        String newKey = oldKey;
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        while (System.nanoTime() < deadline && newKey.equals(oldKey)) {
+            Thread.sleep(200);
+            newKey = Files.readString(keyFile, StandardCharsets.UTF_8).trim();
+        }
+        assertNotEquals(oldKey, newKey, "Key file should change after rotation");
+        assertTrue(newKey.matches("[0-9a-f]{64}"));
+        accessKey = newKey;
+
+        // The session created with the old key must no longer work.
+        HttpResponse<String> stale = sendRaw("/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"tools/list\"}",
+                Map.of("Authorization", "Bearer " + newKey, "Mcp-Session-Id", oldSession));
+        JsonObject staleBody = JsonParser.parseString(stale.body()).getAsJsonObject();
+        assertTrue(staleBody.has("error"), "old session must be invalidated after rotation: " + staleBody);
+
+        // The old key remains accepted during the in-memory grace window.
+        HttpResponse<String> grace = sendRaw("/mcp", pingBody(51),
+                Map.of("Authorization", "Bearer " + oldKey));
+        assertEquals(200, grace.statusCode(), "old key should still work during rotation grace");
+
+        // A fresh session created with the new key works normally.
+        JsonObject init = rpc("initialize", jsonObj("protocolVersion", "2024-11-05"), 52);
+        assertNotNull(init.getAsJsonObject("result"), init.toString());
+        JsonObject tools = rpc("tools/list", new JsonObject(), 53);
+        assertFalse(tools.has("error"), tools.toString());
+    }
+
+    @Test
     @Order(100)
     void authFailuresAreThrottled() throws Exception {
         Map<String, String> bad = new LinkedHashMap<>();
@@ -445,7 +510,12 @@ public class McpIntegrationTest {
         req.add("params", params == null ? new JsonObject() : params);
         Map<String, String> headers = new LinkedHashMap<>();
         if (withAuth && key != null) headers.put("Authorization", "Bearer " + key);
+        if (sessionId != null && !sessionId.isBlank()) headers.put("Mcp-Session-Id", sessionId);
         HttpResponse<String> resp = sendRaw("/mcp", GSON.toJson(req), headers);
+        if ("initialize".equals(method) && resp.statusCode() == 200) {
+            String sid = resp.headers().firstValue("Mcp-Session-Id").orElse(null);
+            if (sid != null && !sid.isBlank()) sessionId = sid;
+        }
         return JsonParser.parseString(resp.body()).getAsJsonObject();
     }
 

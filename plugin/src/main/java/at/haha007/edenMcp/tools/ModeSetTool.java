@@ -4,6 +4,7 @@ import at.haha007.edenMcp.core.audit.AuditLogger;
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.mode.OperatingMode;
+import at.haha007.edenMcp.core.policy.SecurityPolicy;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
@@ -18,14 +19,14 @@ public final class ModeSetTool implements McpTool {
     private final AtomicReference<OperatingMode> mode;
     private final AuditLogger audit;
     private final Consumer<OperatingMode> onChange;
-    private final boolean allowUnsafeAtRuntime;
+    private final SecurityPolicy securityPolicy;
 
     public ModeSetTool(AtomicReference<OperatingMode> mode, AuditLogger audit,
-                       Consumer<OperatingMode> onChange, boolean allowUnsafeAtRuntime) {
+                       Consumer<OperatingMode> onChange, SecurityPolicy securityPolicy) {
         this.mode = mode;
         this.audit = audit;
         this.onChange = onChange;
-        this.allowUnsafeAtRuntime = allowUnsafeAtRuntime;
+        this.securityPolicy = securityPolicy;
     }
 
     @Override public String name() { return "eden.mode.set"; }
@@ -48,7 +49,7 @@ public final class ModeSetTool implements McpTool {
         if (m == null) return ToolResult.error("Missing 'mode'");
         OperatingMode next = OperatingMode.parse(String.valueOf(m), null);
         if (next == null) return ToolResult.error("Invalid mode");
-        if (next == OperatingMode.UNSAFE && !allowUnsafeAtRuntime) {
+        if (!securityPolicy.canEnter(next)) {
             return ToolResult.error("Unsafe mode is locked by server policy; use the server console");
         }
         OperatingMode prev = mode.getAndSet(next);

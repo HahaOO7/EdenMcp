@@ -12,6 +12,8 @@ mcp:
     # max-body-bytes: 1048576
     # max-batch-size: 20
     # max-sse-clients: 20
+    # session-idle-seconds: 1800  # sessions expire after this idle time
+    # max-sessions: 100
     tls:
       enabled: true         # protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
@@ -27,6 +29,8 @@ mcp:
     # allow-legacy-header: false    # X-Eden-Key (deprecated); Bearer token is the default
     # max-failures: 10              # failed auth attempts before a temporary block
     # block-seconds: 60
+    # rotation-grace-seconds: 300   # old key stays valid after `mcp key rotate` (in-memory)
+    # multi-key-directory: keys     # optional extra keys; each owner-only file is a key
 
   policy:
     # allow-unsafe-at-runtime: true  # set false to require the server console for 'unsafe'

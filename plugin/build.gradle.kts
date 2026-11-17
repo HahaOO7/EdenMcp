@@ -1,6 +1,7 @@
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 
 plugins {
     id("com.gradleup.shadow")
@@ -11,7 +12,7 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":hooks:luckperms"))
 
-    compileOnly("io.papermc.paper:paper-api:26.3.build.+")
+    compileOnly("io.papermc.paper:paper-api:${providers.gradleProperty("paperApiVersion").get()}")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -24,15 +25,32 @@ val luckPermsPluginJarProvider = layout.buildDirectory.file("integration-libs/Lu
 
 val downloadLuckPerms = tasks.register("downloadLuckPerms") {
     val out = luckPermsPluginJarProvider.get().asFile
+    val expectedSha = providers.gradleProperty("luckPermsSha256").get().lowercase()
     outputs.file(out)
     doLast {
-        out.parentFile.mkdirs()
-        if (!out.exists() || out.length() == 0L) {
-            val url = URI.create("https://download.luckperms.net/1678/bukkit/loader/LuckPerms-Bukkit-5.5.91.jar").toURL()
-            url.openStream().use { input ->
-                Files.copy(input, out.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
+        fun sha256(file: java.io.File): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(file.readBytes())
+                .joinToString("") { "%02x".format(it) }
+
+        // Verify any cached jar too; re-download if missing or tampered with.
+        if (out.exists() && sha256(out) == expectedSha) return@doLast
+        if (out.exists()) {
+            logger.lifecycle("LuckPerms jar checksum mismatch; re-downloading")
+            out.delete()
         }
+        out.parentFile.mkdirs()
+        val tmp = out.resolveSibling(out.name + ".download")
+        val url = URI.create("https://download.luckperms.net/1678/bukkit/loader/LuckPerms-Bukkit-5.5.91.jar").toURL()
+        url.openStream().use { input ->
+            Files.copy(input, tmp.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+        val actual = sha256(tmp)
+        check(actual == expectedSha) {
+            "LuckPerms jar SHA-256 mismatch: expected $expectedSha but got $actual. " +
+                "Update luckPermsSha256 in gradle.properties only after verifying the new artifact."
+        }
+        Files.move(tmp.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
     }
 }
 

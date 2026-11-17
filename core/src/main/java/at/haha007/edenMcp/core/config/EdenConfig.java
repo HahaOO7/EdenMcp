@@ -27,13 +27,15 @@ public record EdenConfig(
     public record TransportConfig(String type, String bind, int port,
                                   List<String> allowedHosts, List<String> allowedOrigins,
                                   int maxBodyBytes, int maxBatchSize, int maxSseClients,
+                                  int sessionIdleSeconds, int maxSessions,
                                   TlsConfig tls) {}
 
     public record TlsConfig(boolean enabled, String mode, String certPath, String keyPath,
                             String keystorePath, String keystorePassword,
                             boolean requireClientCert, String truststorePath, String truststorePassword) {}
 
-    public record AuthConfig(boolean allowLegacyHeader, int maxFailures, int blockSeconds) {}
+    public record AuthConfig(boolean allowLegacyHeader, int maxFailures, int blockSeconds,
+                             int rotationGraceSeconds, String multiKeyDirectory) {}
 
     public record PolicyConfig(boolean allowUnsafeAtRuntime, boolean logsRequireModerate) {}
 
@@ -53,6 +55,8 @@ public record EdenConfig(
         int maxBodyBytes = Math.max(1024, cfg.getInt("mcp.transport.max-body-bytes", 1024 * 1024));
         int maxBatchSize = Math.max(1, cfg.getInt("mcp.transport.max-batch-size", 20));
         int maxSseClients = Math.max(1, cfg.getInt("mcp.transport.max-sse-clients", 20));
+        int sessionIdleSeconds = Math.max(60, cfg.getInt("mcp.transport.session-idle-seconds", 1800));
+        int maxSessions = Math.max(1, cfg.getInt("mcp.transport.max-sessions", 100));
 
         boolean tlsEnabled = cfg.getBoolean("mcp.transport.tls.enabled", true);
         String tlsMode = cfg.getString("mcp.transport.tls.mode", "self-signed");
@@ -65,14 +69,16 @@ public record EdenConfig(
         String trustPass = cfg.getString("mcp.transport.tls.truststore-password", "");
 
         TransportConfig transport = new TransportConfig(type, bind, port, allowedHosts, allowedOrigins,
-                maxBodyBytes, maxBatchSize, maxSseClients,
+                maxBodyBytes, maxBatchSize, maxSseClients, sessionIdleSeconds, maxSessions,
                 new TlsConfig(tlsEnabled, tlsMode, certPath, keyPath, ksPath, ksPass,
                         requireClientCert, trustPath, trustPass));
 
         AuthConfig auth = new AuthConfig(
                 cfg.getBoolean("mcp.auth.allow-legacy-header", false),
                 Math.max(1, cfg.getInt("mcp.auth.max-failures", 10)),
-                Math.max(1, cfg.getInt("mcp.auth.block-seconds", 60))
+                Math.max(1, cfg.getInt("mcp.auth.block-seconds", 60)),
+                Math.max(0, cfg.getInt("mcp.auth.rotation-grace-seconds", 300)),
+                cfg.getString("mcp.auth.multi-key-directory", "keys")
         );
         PolicyConfig policy = new PolicyConfig(
                 cfg.getBoolean("mcp.policy.allow-unsafe-at-runtime", true),

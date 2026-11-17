@@ -35,6 +35,12 @@ public final class AuditLogger {
         logger.warning("[AUDIT] auth-failure ts=" + Instant.now() + " caller=" + safe(caller));
     }
 
+    /** Records a key rotation by id only; key material must never reach the log. */
+    public void keyRotate(String caller, String keyId) {
+        logger.warning("[AUDIT] key-rotate ts=" + Instant.now() + " caller=" + safe(caller)
+                + " keyId=" + safe(keyId));
+    }
+
     private String safe(String s) {
         if (s == null) return "?";
         String cleaned = s.replaceAll("[\r\n]", " ");
