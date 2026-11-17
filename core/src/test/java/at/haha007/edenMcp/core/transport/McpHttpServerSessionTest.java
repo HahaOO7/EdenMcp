@@ -15,8 +15,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -132,5 +135,25 @@ class McpHttpServerSessionTest {
         assertEquals(0, server.activeSessions());
         Resp after = post(rpc(12, "tools/list"), key, session);
         assertTrue(after.body().has("error"), "invalidated session must be rejected: " + after.body());
+    }
+
+    @Test
+    void rotationClosesSseStreamsOfInvalidatedPrincipal() throws Exception {
+        try (Socket s = new Socket("127.0.0.1", server.port())) {
+            s.setSoTimeout(4000);
+            OutputStream os = s.getOutputStream();
+            os.write(("GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + key + "\r\n\r\n")
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            os.flush();
+            BufferedReader br = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.ISO_8859_1));
+            assertEquals("HTTP/1.1 200 OK", br.readLine());
+            assertNotNull(br.readLine(), "SSE response headers should follow the status line");
+
+            assertEquals(1, server.invalidateSessionsForPrincipal("primary"));
+            long start = System.currentTimeMillis();
+            int next = br.read();
+            assertTrue(next == -1 || System.currentTimeMillis() - start < 3500,
+                    "SSE stream should close promptly when the principal is invalidated");
+        }
     }
 }

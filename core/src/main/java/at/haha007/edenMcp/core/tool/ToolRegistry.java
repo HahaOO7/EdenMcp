@@ -33,10 +33,6 @@ public final class ToolRegistry {
                 .toList();
     }
 
-    public boolean canExecute(OperatingMode mode, McpTool tool) {
-        return mode != null && tool != null && mode.allows(tool.level());
-    }
-
     public List<McpTool> all() {
         return tools.values().stream().sorted(Comparator.comparing(McpTool::name)).toList();
     }

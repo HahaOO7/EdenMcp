@@ -49,6 +49,8 @@ public final class McpHttpServer {
     private final AtomicReference<OperatingMode> mode;
     private final SecurityPolicy securityPolicy;
     private final Set<String> allowedHosts = new HashSet<>();
+    private final Set<String> allowedOrigins = new HashSet<>();
+    private final boolean explicitOrigins;
     private final Map<String, FailureRecord> failures = new ConcurrentHashMap<>();
     private final Map<String, McpSession> sessions = new ConcurrentHashMap<>();
     private volatile long lastSessionPrune;
@@ -94,6 +96,10 @@ public final class McpHttpServer {
         for (String h : config.transport().allowedHosts()) {
             if (h != null && !h.isBlank()) allowedHosts.add(h.trim().toLowerCase(Locale.ROOT));
         }
+        this.explicitOrigins = !config.transport().allowedOrigins().isEmpty();
+        for (String o : config.transport().allowedOrigins()) {
+            if (o != null && !o.isBlank()) allowedOrigins.add(o.trim());
+        }
     }
 
     public void start(Path dataFolder) throws Exception {
@@ -138,7 +144,7 @@ public final class McpHttpServer {
         return sessions.size();
     }
 
-    /** Close every session bound to a key id (used after rotation/revocation). */
+    /** Close every session and SSE stream bound to a key id (used after rotation/revocation). */
     public int invalidateSessionsForPrincipal(String principalId) {
         int n = 0;
         Iterator<McpSession> it = sessions.values().iterator();
@@ -147,6 +153,9 @@ public final class McpHttpServer {
                 it.remove();
                 n++;
             }
+        }
+        for (SseClient c : sseClients) {
+            if (principalId != null && principalId.equals(c.principalId())) c.close();
         }
         if (n > 0) logger.info("Invalidated " + n + " MCP session(s) for key " + principalId);
         return n;
@@ -173,15 +182,18 @@ public final class McpHttpServer {
                 sendJson(ex, 503, Map.of("error", "too many SSE clients"));
                 return;
             }
-            McpSession session = newSession(principal, PROTOCOL_VERSION);
+            McpSession session = newSession(principal);
             Headers h = ex.getResponseHeaders();
             h.add("Mcp-Session-Id", session.id());
             h.add("Content-Type", "text/event-stream");
             h.add("Cache-Control", "no-cache");
             h.add("Connection", "keep-alive");
             h.add("X-Accel-Buffering", "no");
+            Object presented = ex.getAttribute("edenmcp.presented-key");
+            String credential = presented instanceof String s ? s : null;
+            ex.setAttribute("edenmcp.presented-key", null);
             ex.sendResponseHeaders(200, 0);
-            client = new SseClient(ex);
+            client = new SseClient(ex, principal.id());
             sseClients.add(client);
             client.sendEvent("endpoint", Map.of("url", "/message?sessionId=" + session.id()));
             client.sendEvent("ready", Map.of("mode", mode.get().name().toLowerCase(Locale.ROOT)));
@@ -192,6 +204,8 @@ public final class McpHttpServer {
                     Thread.currentThread().interrupt();
                     break;
                 }
+                // A revoked/expired key must not keep a long-lived stream alive.
+                if (credential == null || keyManager.authenticate(credential) == null) break;
                 if (!client.sendComment("keepalive")) break;
             }
         } catch (Exception e) {
@@ -207,6 +221,11 @@ public final class McpHttpServer {
     }
 
     private void handleMcp(HttpExchange ex) throws IOException {
+        if ("OPTIONS".equalsIgnoreCase(ex.getRequestMethod())) {
+            if (handlePreflight(ex)) return;
+            sendJson(ex, 405, rpcError(null, -32600, "POST required"));
+            return;
+        }
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             sendJson(ex, 405, rpcError(null, -32600, "POST required"));
             return;
@@ -287,7 +306,7 @@ public final class McpHttpServer {
     private Map<String, Object> handleInitialize(JsonObject params, HttpExchange ex, Principal principal) {
         String requested = optString(params, "protocolVersion");
         String version = requested != null && SUPPORTED_VERSIONS.contains(requested) ? requested : PROTOCOL_VERSION;
-        McpSession session = newSession(principal, version);
+        McpSession session = newSession(principal);
         ex.getResponseHeaders().set("Mcp-Session-Id", session.id());
 
         Map<String, Object> caps = new LinkedHashMap<>();
@@ -358,7 +377,7 @@ public final class McpHttpServer {
 
     // ---- sessions --------------------------------------------------------
 
-    private McpSession newSession(Principal principal, String protocolVersion) {
+    private McpSession newSession(Principal principal) {
         pruneSessions();
         if (sessions.size() >= config.transport().maxSessions()) {
             sessions.values().stream()
@@ -368,7 +387,7 @@ public final class McpHttpServer {
         byte[] raw = new byte[16];
         RANDOM.nextBytes(raw);
         String id = HexFormat.of().formatHex(raw);
-        McpSession session = new McpSession(id, principal, protocolVersion, System.currentTimeMillis());
+        McpSession session = new McpSession(id, principal, System.currentTimeMillis());
         sessions.put(id, session);
         return session;
     }
@@ -415,19 +434,16 @@ public final class McpHttpServer {
     private static final class McpSession {
         private final String id;
         private final Principal principal;
-        private final String protocolVersion;
         private volatile long lastAccess;
 
-        McpSession(String id, Principal principal, String protocolVersion, long createdAt) {
+        McpSession(String id, Principal principal, long createdAt) {
             this.id = id;
             this.principal = principal;
-            this.protocolVersion = protocolVersion;
             this.lastAccess = createdAt;
         }
 
         String id() { return id; }
         Principal principal() { return principal; }
-        String protocolVersion() { return protocolVersion; }
         long lastAccess() { return lastAccess; }
         void touch() { lastAccess = System.currentTimeMillis(); }
         boolean expired(long now, long idleMillis) { return now - lastAccess > idleMillis; }
@@ -450,6 +466,7 @@ public final class McpHttpServer {
         pruneFailures();
 
         String provided = extractKey(ex);
+        ex.setAttribute("edenmcp.presented-key", provided);
         Principal principal = keyManager.authenticate(provided);
         if (principal == null) {
             audit.authFailure(caller(ex, null));
@@ -478,19 +495,46 @@ public final class McpHttpServer {
         return null; // No query-string credentials.
     }
 
+    private boolean handlePreflight(HttpExchange ex) throws IOException {
+        if (!explicitOrigins) return false;
+        String origin = ex.getRequestHeaders().getFirst("Origin");
+        if (origin == null || !allowedOrigins.contains(origin.trim())) return false;
+        Headers h = ex.getResponseHeaders();
+        h.set("Access-Control-Allow-Origin", origin.trim());
+        h.set("Vary", "Origin");
+        h.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+        h.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id");
+        h.set("Access-Control-Max-Age", "600");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+        return true;
+    }
+
     private boolean checkRequestTarget(HttpExchange ex) throws IOException {
         List<String> origins = ex.getRequestHeaders().get("Origin");
         if (origins != null && !origins.isEmpty()) {
-            String originHost = null;
-            try {
-                URI u = URI.create(origins.get(0).trim());
-                originHost = u.getHost();
-            } catch (Exception ignored) {
-            }
-            if (originHost == null || !isAllowedHost(originHost)) {
-                logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origins.get(0));
-                sendJson(ex, 403, Map.of("error", "origin not allowed"));
-                return false;
+            String origin = origins.get(0).trim();
+            if (explicitOrigins) {
+                if (!allowedOrigins.contains(origin)) {
+                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
+                    sendJson(ex, 403, Map.of("error", "origin not allowed"));
+                    return false;
+                }
+                // Exact-match echo only; no wildcard and no credentialed CORS by default.
+                ex.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
+                ex.getResponseHeaders().set("Vary", "Origin");
+            } else {
+                String originHost = null;
+                try {
+                    URI u = URI.create(origin);
+                    originHost = u.getHost();
+                } catch (Exception ignored) {
+                }
+                if (originHost == null || !isAllowedHost(originHost)) {
+                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
+                    sendJson(ex, 403, Map.of("error", "origin not allowed"));
+                    return false;
+                }
             }
         }
         String host = hostOf(ex.getRequestHeaders().getFirst("Host"));
@@ -798,12 +842,18 @@ public final class McpHttpServer {
     private static final class SseClient {
         private final HttpExchange exchange;
         private final OutputStream os;
+        private final String principalId;
+        private final Thread owner;
         private volatile boolean open = true;
 
-        SseClient(HttpExchange exchange) throws IOException {
+        SseClient(HttpExchange exchange, String principalId) throws IOException {
             this.exchange = exchange;
             this.os = exchange.getResponseBody();
+            this.principalId = principalId;
+            this.owner = Thread.currentThread();
         }
+
+        String principalId() { return principalId; }
 
         synchronized boolean sendEvent(String event, Object data) {
             if (!open) return false;
@@ -838,6 +888,7 @@ public final class McpHttpServer {
             open = false;
             try { os.close(); } catch (Exception ignored) {}
             try { exchange.close(); } catch (Exception ignored) {}
+            if (Thread.currentThread() != owner) owner.interrupt();
         }
     }
 }
