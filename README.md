@@ -60,9 +60,14 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `mcp.enabled` | Enable/disable the MCP server |
 | `mcp.mode` | Startup mode: `safe` (default), `moderate`, or `unsafe` |
 | `mcp.transport.bind` / `port` | Bind address and MCP port (default `0.0.0.0:8765`) |
-| `mcp.transport.tls` | TLS mode, custom keystore, optional mTLS |
+| `mcp.transport` | HTTP worker pool, SSE keepalive, session pruning, CORS age, request buffer and shutdown grace |
+| `mcp.transport.tls` | TLS mode, custom keystore, optional mTLS, generated key size/validity |
 | `mcp.auth` | Failure throttling, key rotation grace period, extra key files |
 | `mcp.policy.allow-unsafe-at-runtime` | Set `false` to require the console for escalation to `unsafe` |
+| `mcp.tools.chat-min-interval-ms` | Global chat-send throttle (default `250`; `0` disables it) |
+| `mcp.tools.chat-sync-timeout-seconds` / `command-dispatch-timeout-seconds` | Main-thread wait limits for chat and console commands |
+| `mcp.tools.logs` | Log-read default/max lines, tail scan bytes, max regex filter length |
+| `audit.max-value-length` | Truncation length for sanitized audit values (default `200`) |
 | `hooks.luckperms.enabled` | Enable the LuckPerms hook |
 | `commands.classification` | Ordered regex rules that reclassify specific console commands |
 | `audit` | Tool-call/mode-change logging and optional verbose logging |
@@ -105,7 +110,7 @@ Read-only (`safe`):
 
 Moderate:
 
-- `eden.chat.send` — send a message to a player or broadcast (rate-limited, attributable)
+- `eden.chat.send` — send a message to a player or broadcast (throttled via `mcp.tools.chat-min-interval-ms`, attributable)
 - `eden.mode.set` — change the operating mode (audited)
 
 Unsafe:

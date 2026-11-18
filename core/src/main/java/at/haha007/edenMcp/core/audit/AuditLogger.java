@@ -4,12 +4,19 @@ import java.time.Instant;
 import java.util.logging.Logger;
 
 public final class AuditLogger {
+    private static final int DEFAULT_MAX_VALUE_LENGTH = 200;
     private final Logger logger;
+    private final int maxValueLength;
     private volatile boolean logToolCalls = true;
     private volatile boolean logModeChanges = true;
 
     public AuditLogger(Logger logger) {
+        this(logger, DEFAULT_MAX_VALUE_LENGTH);
+    }
+
+    public AuditLogger(Logger logger, int maxValueLength) {
         this.logger = logger;
+        this.maxValueLength = Math.max(1, maxValueLength);
     }
 
     public void setLogToolCalls(boolean logToolCalls) { this.logToolCalls = logToolCalls; }
@@ -43,6 +50,6 @@ public final class AuditLogger {
     private String safe(String s) {
         if (s == null) return "?";
         String cleaned = s.replaceAll("[\r\n]", " ");
-        return cleaned.length() > 200 ? cleaned.substring(0, 200) + "..." : cleaned;
+        return cleaned.length() > maxValueLength ? cleaned.substring(0, maxValueLength) + "..." : cleaned;
     }
 }

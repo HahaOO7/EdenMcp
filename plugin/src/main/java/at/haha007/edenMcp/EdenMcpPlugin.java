@@ -53,7 +53,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
                 getLogger().warning("Could not create plugin data folder: " + getDataFolder());
             }
 
-            this.audit = new AuditLogger(getLogger());
+            this.audit = new AuditLogger(getLogger(), edenConfig.auditMaxValueLength());
             audit.setLogToolCalls(edenConfig.logToolCalls());
             audit.setLogModeChanges(edenConfig.logModeChanges());
             if (!edenConfig.logToolCalls() || !edenConfig.logModeChanges()) {
@@ -84,7 +84,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
 
             // Core tools
             this.commandDispatchTool = new CommandDispatchTool(this, edenConfig.commandClassification(),
-                    getLogger(), edenConfig.logVerbose());
+                    getLogger(), edenConfig.logVerbose(), edenConfig.tools());
             registry.register(new StatusTool());
             registry.register(new PluginsListTool());
             registry.register(new PlayersListTool());
@@ -94,8 +94,8 @@ public final class EdenMcpPlugin extends JavaPlugin {
                 if (httpServer != null) httpServer.broadcastModeChange(m);
             }, securityPolicy));
             registry.register(new ConfigGetTool(this::buildConfigSnapshot));
-            registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate()));
-            registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose()));
+            registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate(), edenConfig.tools()));
+            registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose(), edenConfig.tools()));
             registry.register(commandDispatchTool);
 
             hookManager.enableAvailableHooks(getServer());

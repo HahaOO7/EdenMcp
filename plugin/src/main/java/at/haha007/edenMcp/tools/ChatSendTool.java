@@ -2,6 +2,7 @@ package at.haha007.edenMcp.tools;
 
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.capability.SideEffects;
+import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
@@ -20,16 +21,19 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public final class ChatSendTool implements McpTool {
-    private static final long MIN_INTERVAL_MS = 250;
     private final Plugin plugin;
     private final Logger logger;
     private final boolean logVerbose;
+    private final long minIntervalMs;
+    private final int syncTimeoutSeconds;
     private final AtomicLong last = new AtomicLong(0);
 
-    public ChatSendTool(Plugin plugin, Logger logger, boolean logVerbose) {
+    public ChatSendTool(Plugin plugin, Logger logger, boolean logVerbose, EdenConfig.ToolConfig tools) {
         this.plugin = plugin;
         this.logger = logger;
         this.logVerbose = logVerbose;
+        this.minIntervalMs = tools.chatMinIntervalMs();
+        this.syncTimeoutSeconds = tools.chatSyncTimeoutSeconds();
     }
 
     @Override public String name() { return "eden.chat.send"; }
@@ -57,7 +61,7 @@ public final class ChatSendTool implements McpTool {
         long now = System.currentTimeMillis();
         while (true) {
             long prev = last.get();
-            if (now - prev < MIN_INTERVAL_MS) return ToolResult.error("Rate limited");
+            if (now - prev < minIntervalMs) return ToolResult.error("Rate limited");
             if (last.compareAndSet(prev, now)) break;
             now = System.currentTimeMillis();
         }
@@ -104,6 +108,6 @@ public final class ChatSendTool implements McpTool {
     private <T> T runSync(Callable<T> task) throws Exception {
         if (Bukkit.isPrimaryThread()) return task.call();
         Future<T> future = Bukkit.getScheduler().callSyncMethod(plugin, task);
-        return future.get(5, TimeUnit.SECONDS);
+        return future.get(syncTimeoutSeconds, TimeUnit.SECONDS);
     }
 }

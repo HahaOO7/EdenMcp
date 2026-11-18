@@ -54,13 +54,16 @@ class McpHttpServerTlsTest {
         keyManager.loadOrCreate();
         String key = Files.readString(keyFile, StandardCharsets.UTF_8).trim();
 
-        EdenConfig.TlsConfig tls = new EdenConfig.TlsConfig(true, "self-signed", "", "", "", "", false, "", "");
+        EdenConfig.TlsConfig tls = new EdenConfig.TlsConfig(true, "self-signed", "", "", "", "", false, "", "",
+                2048, 3650);
         EdenConfig.TransportConfig transport = new EdenConfig.TransportConfig(
-                "http-sse", "127.0.0.1", 0, List.of(), List.of(), 1024 * 1024, 20, 20, 1800, 100, tls);
+                "http-sse", "127.0.0.1", 0, List.of(), List.of(), 1024 * 1024, 20, 20, 1800, 100,
+                8, 32, 60, 256, 1, 15000, 30000, 600, 1000, 8192, tls);
         EdenConfig config = new EdenConfig(true, OperatingMode.SAFE, transport,
                 new EdenConfig.AuthConfig(false, 10, 60, 0, null),
                 new EdenConfig.PolicyConfig(true, false),
-                true, true, false, Map.of(), CommandClassification.empty());
+                EdenConfig.ToolConfig.defaults(),
+                true, true, false, 200, Map.of(), CommandClassification.empty());
 
         ToolRegistry registry = new ToolRegistry();
         HookManager hooks = new HookManager(registry, new HookContext(null, null, logger, new AuditLogger(logger)));
@@ -166,13 +169,15 @@ class McpHttpServerTlsTest {
         };
 
         EdenConfig.TlsConfig tls = new EdenConfig.TlsConfig(true, "custom", "", "",
-                serverKs.toString(), serverPass, true, truststore.toString(), trustPass);
+                serverKs.toString(), serverPass, true, truststore.toString(), trustPass, 2048, 3650);
         EdenConfig.TransportConfig transport = new EdenConfig.TransportConfig(
-                "http-sse", "127.0.0.1", 0, List.of(), List.of(), 1024 * 1024, 20, 20, 1800, 100, tls);
+                "http-sse", "127.0.0.1", 0, List.of(), List.of(), 1024 * 1024, 20, 20, 1800, 100,
+                8, 32, 60, 256, 1, 15000, 30000, 600, 1000, 8192, tls);
         EdenConfig config = new EdenConfig(true, OperatingMode.SAFE, transport,
                 new EdenConfig.AuthConfig(false, 10, 60, 0, null),
                 new EdenConfig.PolicyConfig(true, false),
-                true, true, false, Map.of(), CommandClassification.empty());
+                EdenConfig.ToolConfig.defaults(),
+                true, true, false, 200, Map.of(), CommandClassification.empty());
 
         ToolRegistry registry = new ToolRegistry();
         HookManager hooks = new HookManager(registry, new HookContext(null, null, logger, new AuditLogger(logger)));

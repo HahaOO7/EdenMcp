@@ -40,6 +40,11 @@ mcp:
     allowed-origins: ["https://app.example.com"]  # exact browser origins; enables CORS echo/OPTIONS for these
     session-idle-seconds: 1800           # session idle expiry
     max-sessions: 100
+    # thread-pool-core-size: 8
+    # thread-pool-max-size: 32
+    # sse-keepalive-ms: 15000
+    # cors-max-age-seconds: 600
+    # read-buffer-bytes: 8192
     tls:
       require-client-cert: true           # mTLS
       truststore-path: plugins/EdenMcp/client-truststore.p12
@@ -53,8 +58,15 @@ mcp:
   policy:
     allow-unsafe-at-runtime: false        # require 'mcp mode set unsafe' from console
     logs-require-moderate: true           # hide eden.logs.read in safe mode
+  tools:
+    chat-min-interval-ms: 250             # 0 disables chat throttling
+    logs:
+      max-limit: 500                      # cap lines returned by eden.logs.read
+      max-scan-bytes: 1048576
+      max-pattern-length: 200             # cap regex filter length
 audit:
   log-verbose: true                       # log full commands/messages (off by default)
+  max-value-length: 200                   # audit value truncation
 ```
 
 ## Notes

@@ -2,6 +2,7 @@ package at.haha007.edenMcp.tools;
 
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.capability.SideEffects;
+import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
@@ -15,19 +16,23 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 public final class LogsReadTool implements McpTool {
-    private static final int DEFAULT_LIMIT = 100;
-    private static final int MAX_LIMIT = 500;
-    private static final int MAX_SCAN_BYTES = 1024 * 1024;
-    private static final int MAX_PATTERN_LENGTH = 200;
     // The first character class excludes the quantifier characters, so the group
     // cannot be matched at multiple positions - avoids super-linear backtracking.
     private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
     private final Path logFile;
     private final boolean requireModerate;
+    private final int defaultLimit;
+    private final int maxLimit;
+    private final int maxScanBytes;
+    private final int maxPatternLength;
 
-    public LogsReadTool(Path logFile, boolean requireModerate) {
+    public LogsReadTool(Path logFile, boolean requireModerate, EdenConfig.ToolConfig tools) {
         this.logFile = logFile;
         this.requireModerate = requireModerate;
+        this.defaultLimit = tools.logsDefaultLimit();
+        this.maxLimit = tools.logsMaxLimit();
+        this.maxScanBytes = tools.logsMaxScanBytes();
+        this.maxPatternLength = tools.logsMaxPatternLength();
     }
 
     @Override public String name() { return "eden.logs.read"; }
@@ -40,7 +45,8 @@ public final class LogsReadTool implements McpTool {
         return Map.of(
                 "type", "object",
                 "properties", Map.of(
-                        "limit", Map.of("type", "integer", "description", "Max lines to return (default 100, max 500)"),
+                        "limit", Map.of("type", "integer", "description",
+                                "Max lines to return (default " + defaultLimit + ", max " + maxLimit + ")"),
                         "filter", Map.of("type", "string", "description", "Optional substring or regex filter"),
                         "regex", Map.of("type", "boolean", "description", "Treat filter as regex (default false)")
                 )
@@ -50,16 +56,16 @@ public final class LogsReadTool implements McpTool {
     @Override
     public ToolResult execute(ToolContext context) {
         if (logFile == null || !Files.exists(logFile)) return ToolResult.error("Log file not available");
-        int limit = DEFAULT_LIMIT;
+        int limit = defaultLimit;
         Object lim = context.arguments().get("limit");
-        if (lim instanceof Number n) limit = Math.clamp(n.intValue(), 1, MAX_LIMIT);
-        else if (lim instanceof String s) try { limit = Math.clamp(Integer.parseInt(s), 1, MAX_LIMIT); } catch (Exception ignored) {}
+        if (lim instanceof Number n) limit = Math.clamp(n.intValue(), 1, maxLimit);
+        else if (lim instanceof String s) try { limit = Math.clamp(Integer.parseInt(s), 1, maxLimit); } catch (Exception ignored) {}
 
         String filter = context.arguments().get("filter") == null ? null : String.valueOf(context.arguments().get("filter"));
         boolean regex = Boolean.TRUE.equals(context.arguments().get("regex")) || "true".equals(String.valueOf(context.arguments().get("regex")));
         Pattern pattern = null;
         if (filter != null && !filter.isBlank() && regex) {
-            if (filter.length() > MAX_PATTERN_LENGTH) return ToolResult.error("Regex filter is too long");
+            if (filter.length() > maxPatternLength) return ToolResult.error("Regex filter is too long");
             if (NESTED_QUANTIFIER.matcher(filter).find()) return ToolResult.error("Regex filter rejected: nested quantifier");
             try {
                 pattern = Pattern.compile(filter);
@@ -75,10 +81,10 @@ public final class LogsReadTool implements McpTool {
         }
     }
 
-    private static List<String> readTailLines(Path file, int limit, String filter, Pattern pattern) throws IOException {
+    private List<String> readTailLines(Path file, int limit, String filter, Pattern pattern) throws IOException {
         long length = Files.size(file);
         if (length <= 0) return List.of();
-        int toRead = (int) Math.min(length, MAX_SCAN_BYTES);
+        int toRead = (int) Math.min(length, maxScanBytes);
         byte[] buf = new byte[toRead];
         try (RandomAccessFile raf = new RandomAccessFile(file.toFile(), "r")) {
             raf.seek(length - toRead);

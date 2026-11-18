@@ -14,6 +14,17 @@ mcp:
     # max-sse-clients: 20
     # session-idle-seconds: 1800  # sessions expire after this idle time
     # max-sessions: 100
+    # Thread pool and request handling (defaults shown)
+    # thread-pool-core-size: 8
+    # thread-pool-max-size: 32
+    # thread-pool-keep-alive-seconds: 60
+    # thread-pool-queue-capacity: 256
+    # shutdown-grace-seconds: 1
+    # sse-keepalive-ms: 15000           # minimum 1000; key is re-checked on every keepalive
+    # session-prune-interval-ms: 30000  # minimum 1000
+    # cors-max-age-seconds: 600
+    # auth-failure-prune-threshold: 1000
+    # read-buffer-bytes: 8192           # minimum 256
     tls:
       enabled: true         # protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
@@ -22,6 +33,8 @@ mcp:
       # require-client-cert: false   # optional mTLS; set truststore-path too
       # truststore-path: plugins/EdenMcp/client-truststore.p12
       # truststore-password: changeit
+      # self-signed-key-size: 2048      # minimum 2048
+      # self-signed-validity-days: 3650
 
   auth:
     # Access key is stored in .key in the plugin data folder.
@@ -35,6 +48,16 @@ mcp:
   policy:
     # allow-unsafe-at-runtime: true  # set false to require the server console for 'unsafe'
     # logs-require-moderate: false   # set true to hide eden.logs.read in safe mode
+
+  tools:
+    # chat-min-interval-ms: 250       # global chat throttle; 0 disables it
+    # chat-sync-timeout-seconds: 5    # wait for the server thread when sending chat
+    # command-dispatch-timeout-seconds: 10
+    logs:
+      # default-limit: 100
+      # max-limit: 500
+      # max-scan-bytes: 1048576
+      # max-pattern-length: 200
 
 hooks:
   luckperms:
@@ -51,3 +74,4 @@ audit:
   log-tool-calls: true
   log-mode-changes: true
   # log-verbose: false      # log full commands/messages (off: log only metadata)
+  # max-value-length: 200   # truncation applied to caller/outcome values in audit logs

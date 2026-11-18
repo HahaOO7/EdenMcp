@@ -3,6 +3,7 @@ package at.haha007.edenMcp.tools;
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.config.CommandClassification;
+import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.mode.OperatingMode;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
@@ -22,12 +23,15 @@ public final class CommandDispatchTool implements McpTool {
     private final AtomicReference<CommandClassification> classification;
     private final Logger logger;
     private final boolean logVerbose;
+    private final int dispatchTimeoutSeconds;
 
-    public CommandDispatchTool(Plugin plugin, CommandClassification classification, Logger logger, boolean logVerbose) {
+    public CommandDispatchTool(Plugin plugin, CommandClassification classification, Logger logger,
+                               boolean logVerbose, EdenConfig.ToolConfig tools) {
         this.plugin = plugin;
         this.classification = new AtomicReference<>(classification == null ? CommandClassification.empty() : classification);
         this.logger = logger;
         this.logVerbose = logVerbose;
+        this.dispatchTimeoutSeconds = tools.commandDispatchTimeoutSeconds();
     }
 
     public void updateClassification(CommandClassification classification) {
@@ -70,7 +74,7 @@ public final class CommandDispatchTool implements McpTool {
                     future.completeExceptionally(t);
                 }
             });
-            boolean ok = future.get(10, TimeUnit.SECONDS);
+            boolean ok = future.get(dispatchTimeoutSeconds, TimeUnit.SECONDS);
             return ToolResult.ok(Map.of("dispatched", ok, "classification", effective.name(), "command", normalized));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

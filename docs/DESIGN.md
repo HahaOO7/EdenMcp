@@ -168,12 +168,21 @@ mcp:
     # max-sse-clients: 20
     # session-idle-seconds: 1800   # session idle expiry
     # max-sessions: 100
+    # thread-pool-core-size: 8 / max-size: 32 / keep-alive-seconds: 60 / queue-capacity: 256
+    # shutdown-grace-seconds: 1
+    # sse-keepalive-ms: 15000        # min 1000; key re-authenticated on every keepalive
+    # session-prune-interval-ms: 30000
+    # cors-max-age-seconds: 600
+    # auth-failure-prune-threshold: 1000
+    # read-buffer-bytes: 8192
     tls:
       enabled: true         # default; protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
       # keystore-path / keystore-password when mode=custom
       # require-client-cert: false   # optional mTLS; set truststore-path too
       # truststore-path / truststore-password
+      # self-signed-key-size: 2048   # minimum 2048
+      # self-signed-validity-days: 3650
 
   auth:
     # Access key is stored in a server-side .key file in the plugin data folder.
@@ -187,6 +196,16 @@ mcp:
   policy:
     # allow-unsafe-at-runtime: true  # false = require console for 'unsafe'
     # logs-require-moderate: false   # true = hide eden.logs.read in safe mode
+
+  tools:
+    # chat-min-interval-ms: 250      # global chat throttle; 0 disables it
+    # chat-sync-timeout-seconds: 5
+    # command-dispatch-timeout-seconds: 10
+    logs:
+      # default-limit: 100
+      # max-limit: 500
+      # max-scan-bytes: 1048576
+      # max-pattern-length: 200
 
 hooks:
   # Server-provided hook enablement (not client-configurable)
@@ -206,6 +225,7 @@ audit:
   log-tool-calls: true
   log-mode-changes: true
   # log-verbose: false      # log full commands/messages (off by default)
+  # max-value-length: 200   # sanitized audit value truncation
 ```
 
 - Default mode is `safe`. A cryptographically random, owner-only access key is generated into a static `.key` file on first startup; protect this file and distribute the key out-of-band to authorized clients. All new keys above are **optional** with secure defaults — a fresh install needs none of them.

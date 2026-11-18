@@ -58,15 +58,7 @@ public final class McpHttpServer {
     private HttpServer server;
     private volatile int port;
     private final Set<SseClient> sseClients = ConcurrentHashMap.newKeySet();
-    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
-            8, 32, 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(256),
-            r -> {
-                Thread t = new Thread(r, "edenmcp-http");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.CallerRunsPolicy());
+    private final ThreadPoolExecutor executor;
 
     @SuppressWarnings("unused")
     public McpHttpServer(EdenConfig config,
@@ -84,6 +76,17 @@ public final class McpHttpServer {
         this.logger = logger;
         this.mode = mode;
         this.securityPolicy = new SecurityPolicy(config.policy().allowUnsafeAtRuntime());
+        EdenConfig.TransportConfig transportConfig = config.transport();
+        this.executor = new ThreadPoolExecutor(
+                transportConfig.threadPoolCoreSize(), transportConfig.threadPoolMaxSize(),
+                transportConfig.threadPoolKeepAliveSeconds(), TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(transportConfig.threadPoolQueueCapacity()),
+                r -> {
+                    Thread t = new Thread(r, "edenmcp-http");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy());
         // hookManager and configSnapshotSupplier are reserved for future protocol extensions.
 
         String bind = config.transport().bind();
@@ -164,11 +167,11 @@ public final class McpHttpServer {
         for (SseClient c : sseClients) c.close();
         sseClients.clear();
         sessions.clear();
-        if (server != null) server.stop(1);
+        if (server != null) server.stop(config.transport().shutdownGraceSeconds());
         executor.shutdownNow();
     }
 
-    @SuppressWarnings("BusyWait") // 15-second SSE keepalive cadence is intentional, not a tight spin.
+    @SuppressWarnings("BusyWait") // SSE keepalive cadence is configured; mcp.transport.sse-keepalive-ms floors it at 1s.
     private void handleSse(HttpExchange ex) {
         SseClient client = null;
         try {
@@ -199,7 +202,7 @@ public final class McpHttpServer {
             client.sendEvent("ready", Map.of("mode", mode.get().name().toLowerCase(Locale.ROOT)));
             while (client.isOpen() && !Thread.currentThread().isInterrupted()) {
                 try {
-                    Thread.sleep(15000);
+                    Thread.sleep(config.transport().sseKeepaliveMs());
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
@@ -409,7 +412,7 @@ public final class McpHttpServer {
 
     private void pruneSessions() {
         long now = System.currentTimeMillis();
-        if (now - lastSessionPrune < 30_000L) return;
+        if (now - lastSessionPrune < config.transport().sessionPruneIntervalMs()) return;
         lastSessionPrune = now;
         long idle = config.transport().sessionIdleSeconds() * 1000L;
         sessions.values().removeIf(s -> s.expired(now, idle));
@@ -503,7 +506,7 @@ public final class McpHttpServer {
         h.set("Vary", "Origin");
         h.set("Access-Control-Allow-Methods", "POST, OPTIONS");
         h.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id");
-        h.set("Access-Control-Max-Age", "600");
+        h.set("Access-Control-Max-Age", String.valueOf(config.transport().corsMaxAgeSeconds()));
         ex.sendResponseHeaders(204, -1);
         ex.close();
         return true;
@@ -577,7 +580,7 @@ public final class McpHttpServer {
     }
 
     private void pruneFailures() {
-        if (failures.size() < 1000) return;
+        if (failures.size() < config.transport().authFailurePruneThreshold()) return;
         long now = System.currentTimeMillis();
         failures.entrySet().removeIf(e -> e.getValue().blockUntil < now && e.getValue().count == 0);
     }
@@ -602,9 +605,10 @@ public final class McpHttpServer {
         } catch (Exception e) { return "unknown"; }
     }
 
-    private static byte[] readBounded(InputStream is, int max) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(max, 8192));
-        byte[] buf = new byte[8192];
+    private byte[] readBounded(InputStream is, int max) throws IOException {
+        int chunkSize = config.transport().readBufferBytes();
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(max, chunkSize));
+        byte[] buf = new byte[chunkSize];
         int total = 0;
         while (true) {
             int n = is.read(buf);
@@ -713,7 +717,7 @@ public final class McpHttpServer {
                 Files.deleteIfExists(ks);
             }
             pass = randomPassword();
-            boolean generated = tryGenerateSelfSigned(ks, new String(pass));
+            boolean generated = tryGenerateSelfSigned(ks, new String(pass), tls);
             if (!generated) throw new IllegalStateException("Failed to generate self-signed keystore.");
             Files.writeString(passFile, new String(pass) + System.lineSeparator(), StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
@@ -731,7 +735,7 @@ public final class McpHttpServer {
         return HexFormat.of().formatHex(raw).toCharArray();
     }
 
-    private boolean tryGenerateSelfSigned(Path ks, String pass) {
+    private boolean tryGenerateSelfSigned(Path ks, String pass, EdenConfig.TlsConfig tls) {
         Path keytool = Path.of(System.getProperty("java.home"), "bin", "keytool");
         if (!Files.isExecutable(keytool)) {
             logger.warning("keytool is not available at " + keytool
@@ -746,10 +750,10 @@ public final class McpHttpServer {
                     keytool.toString(), "-genkeypair",
                     "-alias", "edenmcp",
                     "-keyalg", "RSA",
-                    "-keysize", "2048",
+                    "-keysize", String.valueOf(tls.selfSignedKeySize()),
                     "-storetype", "PKCS12",
                     "-keystore", ks.toAbsolutePath().toString(),
-                    "-validity", "3650",
+                    "-validity", String.valueOf(tls.selfSignedValidityDays()),
                     "-storepass", pass,
                     "-keypass", pass,
                     "-dname", dname
