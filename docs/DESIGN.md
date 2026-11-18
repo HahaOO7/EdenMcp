@@ -138,7 +138,7 @@ record HookContribution(
 
 - Hooks are explicitly wired/registered by `plugin` from known hook modules; only hooks whose `isAvailable` is true (and that are enabled server-side) contribute.
 - Each contributed tool carries its own `level`/`sideEffects`; the hook cannot bypass mode or access-key enforcement.
-- Hook failures are isolated: a throwing hook must not break core MCP availability (log and degrade gracefully).
+- Hook failures are isolated: a throwing hook must not break core MCP availability (log and degrade gracefully). Tools are registered only after `onEnable` succeeds; any partial registration is rolled back, so a failed hook never leaves callable tools in the registry.
 - Each hook module covers exactly one external plugin/API integration.
 
 ### Example: LuckPerms (`hooks:luckperms`)

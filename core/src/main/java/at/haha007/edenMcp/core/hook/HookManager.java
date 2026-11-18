@@ -39,14 +39,37 @@ public final class HookManager {
             logger.info("Hook '" + hook.id() + "' not available; skipping.");
             return;
         }
+        HookContribution contribution = null;
+        boolean enableAttempted = false;
+        List<McpTool> registered = new ArrayList<>();
         try {
-            HookContribution contribution = hook.contribute(context);
-            contribution.tools().forEach(registry::register);
+            contribution = hook.contribute(context);
+            // Enable first: a hook that fails to initialise must never expose its tools.
+            enableAttempted = true;
             contribution.onEnable().ifPresent(Runnable::run);
+            for (McpTool tool : contribution.tools()) {
+                registered.add(tool);
+                registry.register(tool);
+            }
             states.put(hook.id(), state.withAvailable(true).withEnabled(true).withContribution(contribution));
             logger.info("Hook '" + hook.id() + "' enabled with " + contribution.tools().size() + " tool(s).");
         } catch (Throwable t) {
             logger.log(Level.SEVERE, "Failed to enable hook '" + hook.id() + "'", t);
+            // Roll back every tool this hook managed to register before it failed.
+            for (int i = registered.size() - 1; i >= 0; i--) {
+                try {
+                    registry.unregisterIfRegistered(registered.get(i));
+                } catch (Throwable rollbackFailure) {
+                    logger.log(Level.WARNING, "Failed to roll back tool of hook '" + hook.id() + "'", rollbackFailure);
+                }
+            }
+            if (enableAttempted && contribution != null) {
+                try {
+                    contribution.onDisable().ifPresent(Runnable::run);
+                } catch (Throwable disableFailure) {
+                    logger.log(Level.WARNING, "Error disabling failed hook '" + hook.id() + "'", disableFailure);
+                }
+            }
             states.put(hook.id(), state.withAvailable(true).withEnabled(false));
         }
     }

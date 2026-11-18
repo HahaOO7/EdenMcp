@@ -17,6 +17,19 @@ public final class ToolRegistry {
         tools.remove(name);
     }
 
+    /**
+     * Removes {@code tool} only when this registry still holds that exact instance.
+     * Used for rollback so a failed hook cannot remove a same-named tool that was
+     * contributed by another source.
+     */
+    public synchronized boolean unregisterIfRegistered(McpTool tool) {
+        if (tool == null) return false;
+        String name = tool.name();
+        if (name == null || tools.get(name) != tool) return false;
+        tools.remove(name);
+        return true;
+    }
+
     public synchronized void unregisterByPrefix(String prefix) {
         tools.keySet().removeIf(k -> k.startsWith(prefix));
     }
