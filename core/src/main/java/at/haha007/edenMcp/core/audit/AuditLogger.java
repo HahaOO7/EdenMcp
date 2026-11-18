@@ -28,6 +28,13 @@ public final class AuditLogger {
                 + " mode=" + mode + " success=" + success + " outcome=" + safe(outcome));
     }
 
+    /** Resource reads are audited under the same toggle as tool calls. */
+    public void resourceRead(String caller, String uri, String mode, boolean success, String outcome) {
+        if (!logToolCalls) return;
+        logger.info("[AUDIT] resource ts=" + Instant.now() + " caller=" + safe(caller) + " uri=" + safe(uri)
+                + " mode=" + mode + " success=" + success + " outcome=" + safe(outcome));
+    }
+
     public void modeChange(String caller, String previous, String next) {
         if (!logModeChanges) return;
         logger.warning("[AUDIT] mode-change ts=" + Instant.now() + " caller=" + safe(caller)

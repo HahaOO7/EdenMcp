@@ -55,11 +55,11 @@ EdenMcp runs in exactly one mode at a time. The mode is configured on the server
 - **Primary/preferred transport:** HTTP with SSE (remote-capable), suitable for MCP clients connecting over the network.
 - The server binds to a configured host/port (separate from the Minecraft game port). Remote operation on normal hosting platforms is a supported deployment model, so the MCP endpoint must be usable without requiring SSH port-forwarding or an external reverse proxy.
 - **TLS:** to protect the access key and data in transit, the transport enables **built-in TLS** by default. On first startup the plugin generates a self-signed certificate/keypair (stored in the plugin data folder) and enables TLS, logging the certificate **SHA-256 fingerprint** for out-of-band verification (trust-on-first-use/pinning by the client). The generated keystore and its random password file are written owner-only; there is no hardcoded keystore password. TLS 1.2/1.3 with AEAD ciphers only is enforced. Operators may instead supply their own keystore (`mode: custom`) or enable optional mTLS with a truststore (`require-client-cert` + truststore). TLS can be explicitly disabled for trusted-network or tunneled deployments, but this produces a prominent warning because plain HTTP exposes the access key and tool I/O.
-- **Sessions:** `initialize` issues an `Mcp-Session-Id` (returned as a header and in the result). `tools/list`, `tools/call`, `resources/list`, and `notifications/initialized` require a valid session; `ping` is a connectivity check that does not. Sessions are bound to the principal (key id) that created them, expire after an idle timeout (`mcp.transport.session-idle-seconds`, default 1800), are capped (`mcp.transport.max-sessions`, default 100), and are invalidated on key rotation. `/message` accepts the session id via header or `sessionId` query parameter. These are internal defaults; clients handle them automatically.
+- **Sessions:** `initialize` issues an `Mcp-Session-Id` (returned as a header and in the result). `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `notifications/initialized` require a valid session; `ping` is a connectivity check that does not. Sessions are bound to the principal (key id) that created them, expire after an idle timeout (`mcp.transport.session-idle-seconds`, default 1800), are capped (`mcp.transport.max-sessions`, default 100), and are invalidated on key rotation. `/message` accepts the session id via header or `sessionId` query parameter. These are internal defaults; clients handle them automatically.
 
 ### Authentication (access key)
 
-- **All access requires a key.** Every MCP interaction (tool/resource listing and tool invocation) must present a valid access key.
+- **All access requires a key.** Every MCP interaction (tool/resource listing, resource reads, and tool invocation) must present a valid access key.
 - **Credential transport:** the key is accepted only as `Authorization: Bearer <key>`. Query-string keys (`?key=`/`?access_key=`) and raw `Authorization` values without the `Bearer` scheme are rejected; presented values are compared as exact bytes (no trimming). A `WWW-Authenticate: Bearer` header is returned on 401. The deprecated `X-Eden-Key` alias is opt-in via `mcp.auth.allow-legacy-header` (default `false`) for migration only.
 - **Key provisioning (initial):** on first startup, if no key exists, the plugin generates a 256-bit (64 hex char) random key and writes it to a static server-side `.key` file in the plugin data folder, owner-only. No key provisioning is required from the operator; the key is copied to authorized clients out-of-band. Rotation/multiple keys are optional hardening, not required for a fresh install.
 - **Key validation and recovery:** on load, a `.key` file must be a regular, owner-only file containing exactly 64 lowercase hex characters. An invalid, world-readable, or symlinked file is quarantined as `.key.invalid` and replaced with a fresh key, with a loud warning — never a startup failure.
@@ -115,6 +115,12 @@ Suggested mapping:
 
 > The key properties are access-key gating, level classification, and mode-filtered exposure/execution; the tool list above matches the shipped plugin.
 
+### Resources
+
+Resources are read-only observations exposed through the MCP resource methods. `resources/list` returns every registered resource (URI, name, optional description/mimeType, and optional `_meta`); `resources/read` takes a `uri` and returns one `contents` entry with `uri`, `mimeType`, and `text` (JSON values are serialized by the transport). Resources have no capability level above `SAFE_READ` and stay visible in every mode. A resource read is authenticated and session-bound just like a tool call; unknown URIs and reader failures produce JSON-RPC errors and are audited.
+
+Shipped resources: `eden://config/snapshot` (the same redacted configuration/state snapshot as `eden.config.get`) and, when LuckPerms is present, `eden://luckperms/groups` contributed by the hook.
+
 ## Hook / Plugin Integration SPI
 
 Hooks let EdenMcp integrate with other plugins without coupling `core` to them. **Available hooks are provided and enabled by the server**, assembled by the `plugin` module from the `hooks/*` modules; clients discover and use what the server exposes but do not configure which hooks exist.
@@ -137,15 +143,15 @@ record HookContribution(
 ```
 
 - Hooks are explicitly wired/registered by `plugin` from known hook modules; only hooks whose `isAvailable` is true (and that are enabled server-side) contribute.
-- Each contributed tool carries its own `level`/`sideEffects`; the hook cannot bypass mode or access-key enforcement.
-- Hook failures are isolated: a throwing hook must not break core MCP availability (log and degrade gracefully). Tools are registered only after `onEnable` succeeds; any partial registration is rolled back, so a failed hook never leaves callable tools in the registry.
+- Each contributed tool carries its own `level`/`sideEffects`; the hook cannot bypass mode or access-key enforcement. Contributed resources are read-only and carry a `reader` that produces content for `resources/read`.
+- Hook failures are isolated: a throwing hook must not break core MCP availability (log and degrade gracefully). Tools and resources are registered only after `onEnable` succeeds; any partial registration is rolled back instance-by-instance, so a failed hook never leaves callable tools or readable resources behind. `describeHooks()` reports both contributed tool names and resource URIs.
 - Each hook module covers exactly one external plugin/API integration.
 
 ### Example: LuckPerms (`hooks:luckperms`)
 
 **Availability:** LuckPerms API present.
 
-The hook contributes two read-only (`SAFE_READ`) tools: `eden.luckperms.user.lookup` and `eden.luckperms.groups.list`. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
+The hook contributes two read-only (`SAFE_READ`) tools: `eden.luckperms.user.lookup` and `eden.luckperms.groups.list`, plus the `eden://luckperms/groups` resource. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
 
 ## Configuration
 
@@ -236,14 +242,14 @@ audit:
 ## Auditing & Safety
 
 - Require and verify the access key on every request; reject unauthenticated access early. Failed authentication is throttled per source IP, and auth failures are always logged.
-- Log every tool invocation and mode change with timestamp, tool/control id, mode, caller identity (as available from transport), and a sanitized, length-bounded outcome. Sensitive content is **redacted at log-write time**: command text, chat messages, and tool error details are not written by default, so `eden.logs.read` cannot expose them. Operators who explicitly want detail can enable `audit.log-verbose`.
+- Log every tool invocation, resource read, and mode change with timestamp, tool/resource id, mode, caller identity (as available from transport), and a sanitized, length-bounded outcome. Resource reads share the `audit.log-tool-calls` toggle, and resource content is never written to the log. Sensitive content is **redacted at log-write time**: command text, chat messages, and tool error details are not written by default, so `eden.logs.read` cannot expose them. Operators who explicitly want detail can enable `audit.log-verbose`.
 - Enforce bounded inputs: bounded request bodies (1 MiB) and JSON-RPC batches, capped SSE clients and a bounded HTTP worker pool, log line/filter bounds with regex-abuse rejection, and rate limits for chat.
 - Make `unsafe` mode, remote binding, and TLS-disabled state clearly visible in startup/runtime logs (including the generated certificate SHA-256 fingerprint when applicable). A warning is emitted if audit logging is disabled.
 - Treat the access key as the primary authorization gate; operators should combine it with network-level controls for remote deployments.
 
 ## Implementation Status
 
-Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, and the LuckPerms hook. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, secret redaction, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
+Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, and the LuckPerms hook. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, secret redaction, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
 
 ## Resolved Decisions
 

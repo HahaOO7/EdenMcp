@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -29,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class McpIntegrationTest {
     private static final Gson GSON = new Gson();
+    private static final Logger LOG = Logger.getLogger(McpIntegrationTest.class.getName());
 
     private Process serverProcess;
     private Thread outputDrainer;
@@ -70,7 +72,7 @@ public class McpIntegrationTest {
         deleteIfExists(serverDir.resolve("whitelist.json"));
 
         List<String> cmd = buildServerCommand(javaBin, paperJarPath, serverDir);
-        System.out.println("[IT] Starting server: " + String.join(" ", cmd));
+        LOG.info("[IT] Starting server: " + String.join(" ", cmd));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(serverDir.toFile());
         pb.redirectErrorStream(true);
@@ -80,7 +82,7 @@ public class McpIntegrationTest {
             try (BufferedReader br = new BufferedReader(new InputStreamReader(serverProcess.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    System.out.println("[SERVER] " + line);
+                    LOG.info("[SERVER] " + line);
                 }
             } catch (IOException ignored) {
             }
@@ -155,6 +157,31 @@ public class McpIntegrationTest {
     }
 
     @Test
+    @Order(7)
+    void resourcesListIncludesCoreAndHookResources() throws Exception {
+        JsonObject resp = rpc("resources/list", new JsonObject(), 220);
+        JsonArray resources = resp.getAsJsonObject("result").getAsJsonArray("resources");
+        assertNotNull(resources);
+        assertTrue(hasResource(resources, "eden://config/snapshot"), "core resource missing: " + resources);
+        assertTrue(hasResource(resources, "eden://luckperms/groups"),
+                "LuckPerms hook should contribute a resource: " + resources);
+    }
+
+    @Test
+    @Order(8)
+    void resourcesReadReturnsContributedContent() throws Exception {
+        JsonObject params = new JsonObject();
+        params.addProperty("uri", "eden://luckperms/groups");
+        JsonObject result = rpc("resources/read", params, 221).getAsJsonObject("result");
+        JsonObject content = result.getAsJsonArray("contents").get(0).getAsJsonObject();
+        assertEquals("eden://luckperms/groups", content.get("uri").getAsString());
+        assertEquals("application/json", content.get("mimeType").getAsString());
+        JsonObject payload = JsonParser.parseString(content.get("text").getAsString()).getAsJsonObject();
+        assertTrue(payload.get("groups").isJsonArray(), payload.toString());
+        assertEquals(payload.getAsJsonArray("groups").size(), payload.get("count").getAsInt());
+    }
+
+    @Test
     @Order(3)
     void authRejectsWrongRawAndLegacyCredentials() throws Exception {
         Map<String, String> wrongKey = new LinkedHashMap<>();
@@ -224,6 +251,16 @@ public class McpIntegrationTest {
         assertTrue(JsonParser.parseString(badSession.body()).getAsJsonObject().has("error"));
 
         // ping is a connectivity check and needs no session.
+        HttpResponse<String> resourceList = sendRaw("/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":38,\"method\":\"resources/list\"}", auth);
+        assertTrue(JsonParser.parseString(resourceList.body()).getAsJsonObject().has("error"),
+                "resources/list without a session must be rejected");
+
+        HttpResponse<String> resourceRead = sendRaw("/mcp",
+                "{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"resources/read\",\"params\":{\"uri\":\"eden://config/snapshot\"}}", auth);
+        assertTrue(JsonParser.parseString(resourceRead.body()).getAsJsonObject().has("error"),
+                "resources/read without a session must be rejected");
+
         HttpResponse<String> ping = sendRaw("/mcp", pingBody(8), auth);
         assertEquals(200, ping.statusCode());
         assertFalse(JsonParser.parseString(ping.body()).getAsJsonObject().has("error"));
@@ -496,6 +533,13 @@ public class McpIntegrationTest {
     private boolean hasTool(JsonArray tools, String name) {
         for (JsonElement e : tools) {
             if (name.equals(e.getAsJsonObject().get("name").getAsString())) return true;
+        }
+        return false;
+    }
+
+    private boolean hasResource(JsonArray resources, String uri) {
+        for (JsonElement e : resources) {
+            if (uri.equals(e.getAsJsonObject().get("uri").getAsString())) return true;
         }
         return false;
     }

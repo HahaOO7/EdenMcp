@@ -3,11 +3,13 @@ package at.haha007.edenMcp;
 import at.haha007.edenMcp.core.audit.AuditLogger;
 import at.haha007.edenMcp.core.auth.AccessKeyManager;
 import at.haha007.edenMcp.core.auth.Principal;
+import at.haha007.edenMcp.core.config.ConfigRedactor;
 import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.hook.HookContext;
 import at.haha007.edenMcp.core.hook.HookManager;
 import at.haha007.edenMcp.core.mode.OperatingMode;
 import at.haha007.edenMcp.core.policy.SecurityPolicy;
+import at.haha007.edenMcp.core.resource.McpResource;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import at.haha007.edenMcp.core.transport.McpHttpServer;
 import at.haha007.edenMcp.hooks.luckperms.LuckPermsHook;
@@ -97,6 +99,12 @@ public final class EdenMcpPlugin extends JavaPlugin {
             registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate(), edenConfig.tools()));
             registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose(), edenConfig.tools()));
             registry.register(commandDispatchTool);
+
+            // Core read-only resource: same redacted snapshot as eden.config.get.
+            hookManager.resources().register(McpResource.text(
+                    "eden://config/snapshot", "EdenMcp configuration snapshot",
+                    "Redacted EdenMcp configuration and runtime state (JSON).", "application/json",
+                    () -> ConfigRedactor.redact(buildConfigSnapshot(), "")));
 
             hookManager.enableAvailableHooks(getServer());
 

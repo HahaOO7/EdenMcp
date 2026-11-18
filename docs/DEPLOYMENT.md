@@ -25,7 +25,7 @@ No extra configuration is required for these:
 - Host and Origin headers are validated (derived from the configured bind address); no CORS headers are sent by default. With the default wildcard bind and no `allowed-hosts`, non-browser clients may use any `Host`, but browser requests are still constrained by the `Origin` check. Set `allowed-hosts` for strict Host enforcement.
 - Request bodies, JSON-RPC batches, SSE connections, and the HTTP worker pool are bounded.
 - TLS uses TLS 1.2/1.3 with AEAD ciphers only. The keystore and its random password file are owner-only. The certificate fingerprint is logged at every startup.
-- MCP calls use sessions: `initialize` returns an `Mcp-Session-Id` (header and result), and `tools/list`, `tools/call`, `resources/list`, and `initialized` require it. Sessions are bound to the key that created them and expire after idle timeout. `ping` needs no session. Most MCP clients handle this automatically.
+- MCP calls use sessions: `initialize` returns an `Mcp-Session-Id` (header and result), and `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `initialized` require it. Sessions are bound to the key that created them and expire after idle timeout. `ping` needs no session. Most MCP clients handle this automatically.
 - Commands/chat are logged as metadata, not verbatim, so `eden.logs.read` cannot expose message content by default. Log filters are bounded against regex abuse.
 - `eden.command.dispatch` is `UNSAFE_ACTION` and is never advertised or callable in `safe` or `moderate` mode. Command classification rules are always anchored to the whole command.
 

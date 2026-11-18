@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.core.hook;
 
+import at.haha007.edenMcp.core.resource.McpResource;
+import at.haha007.edenMcp.core.resource.ResourceRegistry;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import org.bukkit.Server;
@@ -11,14 +13,25 @@ import java.util.logging.Logger;
 
 public final class HookManager {
     private final ToolRegistry registry;
+    private final ResourceRegistry resources;
     private final HookContext context;
     private final Logger logger;
     private final Map<String, HookState> states = new ConcurrentHashMap<>();
 
     public HookManager(ToolRegistry registry, HookContext context) {
+        this(registry, new ResourceRegistry(), context);
+    }
+
+    public HookManager(ToolRegistry registry, ResourceRegistry resources, HookContext context) {
         this.registry = registry;
+        this.resources = resources;
         this.context = context;
         this.logger = context.logger();
+    }
+
+    /** Registry backed by every enabled hook; also used for core-contributed resources. */
+    public ResourceRegistry resources() {
+        return resources;
     }
 
     public void registerKnownHook(EdenHook hook, boolean enabledInConfig) {
@@ -41,24 +54,37 @@ public final class HookManager {
         }
         HookContribution contribution = null;
         boolean enableAttempted = false;
-        List<McpTool> registered = new ArrayList<>();
+        List<McpTool> registeredTools = new ArrayList<>();
+        List<McpResource> registeredResources = new ArrayList<>();
         try {
             contribution = hook.contribute(context);
-            // Enable first: a hook that fails to initialise must never expose its tools.
+            // Enable first: a hook that fails to initialise must never expose its contributions.
             enableAttempted = true;
             contribution.onEnable().ifPresent(Runnable::run);
             for (McpTool tool : contribution.tools()) {
-                registered.add(tool);
+                registeredTools.add(tool);
                 registry.register(tool);
             }
+            for (McpResource resource : contribution.resources()) {
+                registeredResources.add(resource);
+                resources.register(resource);
+            }
             states.put(hook.id(), state.withAvailable(true).withEnabled(true).withContribution(contribution));
-            logger.info("Hook '" + hook.id() + "' enabled with " + contribution.tools().size() + " tool(s).");
+            logger.info("Hook '" + hook.id() + "' enabled with " + contribution.tools().size() + " tool(s) and "
+                    + contribution.resources().size() + " resource(s).");
         } catch (Throwable t) {
             logger.log(Level.SEVERE, "Failed to enable hook '" + hook.id() + "'", t);
-            // Roll back every tool this hook managed to register before it failed.
-            for (int i = registered.size() - 1; i >= 0; i--) {
+            // Roll back every contribution this hook managed to register before it failed.
+            for (int i = registeredResources.size() - 1; i >= 0; i--) {
                 try {
-                    registry.unregisterIfRegistered(registered.get(i));
+                    resources.unregisterIfRegistered(registeredResources.get(i));
+                } catch (Throwable rollbackFailure) {
+                    logger.log(Level.WARNING, "Failed to roll back resource of hook '" + hook.id() + "'", rollbackFailure);
+                }
+            }
+            for (int i = registeredTools.size() - 1; i >= 0; i--) {
+                try {
+                    registry.unregisterIfRegistered(registeredTools.get(i));
                 } catch (Throwable rollbackFailure) {
                     logger.log(Level.WARNING, "Failed to roll back tool of hook '" + hook.id() + "'", rollbackFailure);
                 }
@@ -83,8 +109,10 @@ public final class HookManager {
                     logger.log(Level.WARNING, "Error disabling hook '" + state.hook().id() + "'", t);
                 }
                 registry.unregisterByPrefix("eden." + state.hook().id() + ".");
-                // also remove exact contributed tool names
+                resources.unregisterByPrefix("eden://" + state.hook().id() + "/");
+                // also remove exact contributed names/URIs
                 state.contribution().tools().forEach(t -> registry.unregister(t.name()));
+                state.contribution().resources().forEach(r -> resources.unregister(r.uri()));
             }
         }
     }
@@ -100,6 +128,8 @@ public final class HookManager {
                     m.put("enabled", s.enabled());
                     m.put("tools", s.enabled() && s.contribution() != null
                             ? s.contribution().tools().stream().map(McpTool::name).toList() : List.of());
+                    m.put("resources", s.enabled() && s.contribution() != null
+                            ? s.contribution().resources().stream().map(McpResource::uri).toList() : List.of());
                     return m;
                 })
                 .toList();

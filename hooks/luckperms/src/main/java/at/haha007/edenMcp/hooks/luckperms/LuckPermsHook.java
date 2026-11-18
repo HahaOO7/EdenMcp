@@ -5,11 +5,13 @@ import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.hook.EdenHook;
 import at.haha007.edenMcp.core.hook.HookContext;
 import at.haha007.edenMcp.core.hook.HookContribution;
+import at.haha007.edenMcp.core.resource.McpResource;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
 import net.luckperms.api.LuckPerms;
 import net.luckperms.api.LuckPermsProvider;
+import net.luckperms.api.model.group.Group;
 import net.luckperms.api.model.user.User;
 import org.bukkit.Server;
 
@@ -39,7 +41,15 @@ public final class LuckPermsHook implements EdenHook {
         tools.add(new LpGroupsListTool());
         // Mutations intentionally not exposed as executable tools beyond unsafe command dispatch patterns for now;
         // design states mutations are UNSAFE_ACTION if exposed. Placeholder validated.
-        return HookContribution.ofTools(tools);
+        List<McpResource> resources = List.of(McpResource.text(
+                "eden://luckperms/groups", "LuckPerms groups",
+                "Loaded LuckPerms groups (JSON, read-only).", "application/json",
+                () -> {
+                    List<String> groups = lp().getGroupManager().getLoadedGroups().stream()
+                            .map(Group::getName).sorted().toList();
+                    return Map.of("groups", groups, "count", groups.size());
+                }));
+        return HookContribution.ofToolsAndResources(tools, resources);
     }
 
     private static LuckPerms lp() { return LuckPermsProvider.get(); }
@@ -96,7 +106,7 @@ public final class LuckPermsHook implements EdenHook {
         public ToolResult execute(ToolContext context) {
             try {
                 LuckPerms api = lp();
-                List<String> groups = api.getGroupManager().getLoadedGroups().stream().map(g -> g.getName()).sorted().toList();
+                List<String> groups = api.getGroupManager().getLoadedGroups().stream().map(Group::getName).sorted().toList();
                 return ToolResult.ok(Map.of("groups", groups, "count", groups.size()));
             } catch (Throwable t) {
                 return ToolResult.error("LuckPerms error: " + t.getMessage());

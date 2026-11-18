@@ -126,4 +126,22 @@ class AuditLoggerTest {
         audit.keyRotate("u", "id");
         assertEquals(2, records.size(), "security events are always recorded");
     }
+
+    @Test
+    void resourceReadRecordsUriModeAndOutcome() {
+        audit.resourceRead("key=primary@host", "eden://config/snapshot", "SAFE", true, "ok");
+
+        assertEquals(1, records.size());
+        String msg = message(0);
+        assertTrue(msg.startsWith("[AUDIT] resource "), msg);
+        assertTrue(msg.contains("uri=eden://config/snapshot"), msg);
+        assertTrue(msg.contains("mode=SAFE"), msg);
+        assertTrue(msg.contains("success=true"), msg);
+        assertTrue(msg.contains("outcome=ok"), msg);
+
+        records.clear();
+        audit.setLogToolCalls(false);
+        audit.resourceRead("u", "eden://x", "SAFE", false, "not_found");
+        assertTrue(records.isEmpty(), "resource reads share the tool-call audit toggle");
+    }
 }

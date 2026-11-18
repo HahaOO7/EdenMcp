@@ -7,6 +7,9 @@ import at.haha007.edenMcp.core.config.EdenConfig;
 import at.haha007.edenMcp.core.hook.HookManager;
 import at.haha007.edenMcp.core.mode.OperatingMode;
 import at.haha007.edenMcp.core.policy.SecurityPolicy;
+import at.haha007.edenMcp.core.resource.McpResource;
+import at.haha007.edenMcp.core.resource.ResourceContext;
+import at.haha007.edenMcp.core.resource.ResourceRegistry;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
@@ -43,6 +46,7 @@ public final class McpHttpServer {
     private final EdenConfig config;
     private final AccessKeyManager keyManager;
     private final ToolRegistry registry;
+    private final ResourceRegistry resources;
     private final AuditLogger audit;
     private final Logger logger;
     private final AtomicReference<OperatingMode> mode;
@@ -72,6 +76,7 @@ public final class McpHttpServer {
         this.config = config;
         this.keyManager = keyManager;
         this.registry = registry;
+        this.resources = hookManager == null ? new ResourceRegistry() : hookManager.resources();
         this.audit = audit;
         this.logger = logger;
         this.mode = mode;
@@ -87,7 +92,7 @@ public final class McpHttpServer {
                     return t;
                 },
                 new ThreadPoolExecutor.CallerRunsPolicy());
-        // hookManager and configSnapshotSupplier are reserved for future protocol extensions.
+        // configSnapshotSupplier is reserved for future protocol extensions.
 
         String bind = config.transport().bind();
         this.wildcardBind = bind == null || bind.isBlank() || bind.equals("0.0.0.0")
@@ -283,7 +288,8 @@ public final class McpHttpServer {
         if (rpcMethod == null) return rpcError(id, -32600, "Invalid Request");
 
         boolean needsSession = switch (rpcMethod) {
-            case "tools/list", "tools/call", "resources/list", "notifications/initialized", "initialized" -> true;
+            case "tools/list", "tools/call", "resources/list", "resources/read",
+                 "notifications/initialized", "initialized" -> true;
             default -> false;
         };
         if (needsSession && sessionFor(ex, principal) == null) {
@@ -297,7 +303,8 @@ public final class McpHttpServer {
                 case "ping" -> rpcResult(id, Map.of());
                 case "tools/list" -> rpcResult(id, handleToolsList());
                 case "tools/call" -> rpcResult(id, handleToolsCall(params, caller(ex, principal)));
-                case "resources/list" -> rpcResult(id, Map.of("resources", List.of()));
+                case "resources/list" -> rpcResult(id, handleResourcesList());
+                case "resources/read" -> handleResourcesRead(params, id, caller(ex, principal));
                 default -> rpcError(id, -32601, "Method not found: " + rpcMethod);
             };
         } catch (Exception e) {
@@ -376,6 +383,40 @@ public final class McpHttpServer {
         res.put("content", List.of(content));
         res.put("isError", !ok);
         return res;
+    }
+
+    private Map<String, Object> handleResourcesList() {
+        List<Map<String, Object>> listed = new ArrayList<>();
+        for (McpResource resource : resources.all()) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("uri", resource.uri());
+            map.put("name", resource.name());
+            if (resource.description() != null) map.put("description", resource.description());
+            if (resource.mimeType() != null) map.put("mimeType", resource.mimeType());
+            if (!resource.metadata().isEmpty()) map.put("_meta", resource.metadata());
+            listed.add(map);
+        }
+        return Map.of("resources", listed);
+    }
+
+    private JsonObject handleResourcesRead(JsonObject params, JsonElement id, String caller) {
+        String uri = optString(params, "uri");
+        if (uri == null || uri.isBlank()) return rpcError(id, -32602, "Missing resource uri");
+        OperatingMode active = mode.get();
+        Optional<McpResource> resource = resources.get(uri);
+        if (resource.isEmpty()) {
+            audit.resourceRead(caller, uri, active.name(), false, "not_found");
+            return rpcError(id, -32002, "Resource not found: " + uri);
+        }
+        try {
+            var contents = resource.get().read(new ResourceContext(active, caller, uri));
+            audit.resourceRead(caller, uri, active.name(), true, "ok");
+            return rpcResult(id, Map.of("contents", List.of(contents.toMap())));
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Resource read failed: " + uri, e);
+            audit.resourceRead(caller, uri, active.name(), false, "exception:" + e.getClass().getSimpleName());
+            return rpcError(id, -32000, "Resource read failed: " + uri);
+        }
     }
 
     // ---- sessions --------------------------------------------------------
