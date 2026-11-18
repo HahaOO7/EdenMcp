@@ -63,4 +63,4 @@ audit:
 - Running with `mode: unsafe` or a non-loopback bind prints a warning. Prefer `safe` until you need more.
 - `mcp mode set ...` from the server console always works; `mcp.policy.allow-unsafe-at-runtime` only restricts the MCP tool.
 - To rotate the access key, run `mcp key rotate` from the server console. The new key is written to `.key` (the console does **not** print key material); existing MCP sessions are closed, and the old key stays valid only in memory for `mcp.auth.rotation-grace-seconds` (default 300). The grace period is lost on restart, so update clients promptly. Multiple keys can be added as owner-only files in the `mcp.auth.multi-key-directory` (default `keys`) folder.
-- See `docs/SECURITY_HARDENING_PLAN.md` for the implementation plan and remaining hardening phases.
+- See [docs/DESIGN.md](DESIGN.md) for the security rationale behind these defaults.
