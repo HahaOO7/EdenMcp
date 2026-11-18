@@ -52,7 +52,7 @@ public class McpIntegrationTest {
         assertTrue(Files.isDirectory(serverDir), "Integration server directory missing: " + serverDir);
 
         if (paperJar == null || paperJar.isBlank()) {
-            fail("edenmcp.it.paperJar not set and default Paper jar not found. Run runServer once or pass -Pintegration.paperJar=/path/to/paper.jar");
+            fail("edenmcp.it.paperJar not set. Run ./gradlew test to provision the default Paper jar or pass -Pintegration.paperJar=/path/to/paper.jar");
         }
         Path paperJarPath = Path.of(paperJar);
         assertTrue(Files.exists(paperJarPath), "Paper jar not found: " + paperJarPath);

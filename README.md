@@ -19,7 +19,7 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 - **Java 25** (Gradle toolchain; required to build and run)
 - **Paper 26.3** (the plugin declares `api-version: '26.3'`)
 - Gradle **9.8.2** via the included wrapper (`./gradlew`)
-- Optional: [LuckPerms](https://luckperms.net/) 5.x for the LuckPerms hook (the integration test setup downloads a pinned jar)
+- Optional: [LuckPerms](https://luckperms.net/) 5.x for the LuckPerms hook (the integration test setup downloads a pinned jar automatically)
 
 ## Building
 
@@ -33,7 +33,7 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 
 The deployable shaded jar is written to `plugin/build/libs/plugin-1.0-all.jar`.
 
-Integration tests provision a Paper server under `plugin/build/integration-server/` and download a LuckPerms jar whose SHA-256 is pinned in `gradle.properties`.
+Integration tests provision a Paper server under `plugin/build/integration-server/` and automatically download both the Paper server jar and a LuckPerms jar; their SHA-256 checksums are pinned in `gradle.properties`. A local `plugin/run/` directory is not required. To use an existing Paper jar instead, pass `-Pintegration.paperJar=/path/to/paper.jar`.
 
 ## Installation
 

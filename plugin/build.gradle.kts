@@ -8,11 +8,21 @@ plugins {
     id("xyz.jpenilla.run-paper")
 }
 
+val paperApiVersion = providers.gradleProperty("paperApiVersion").get()
+val paperCoordinates = Regex("""^(\d+(?:\.\d+)*)\.build\.(\d+)(?:-.*)?$""")
+    .matchEntire(paperApiVersion)
+    ?: error("Unsupported paperApiVersion '$paperApiVersion'; expected <mc-version>.build.<build>[-suffix]")
+val paperMcVersion = paperCoordinates.groupValues[1]
+val paperBuildNumber = paperCoordinates.groupValues[2]
+val paperServerSha = providers.gradleProperty("paperServerSha256").get().lowercase()
+val integrationPaperJarProvider = layout.buildDirectory.file("integration-paper/paper-$paperMcVersion-$paperBuildNumber.jar")
+val paperJarOverride = providers.gradleProperty("integration.paperJar")
+
 dependencies {
     implementation(project(":core"))
     implementation(project(":hooks:luckperms"))
 
-    compileOnly("io.papermc.paper:paper-api:${providers.gradleProperty("paperApiVersion").get()}")
+    compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -54,11 +64,50 @@ val downloadLuckPerms = tasks.register("downloadLuckPerms") {
     }
 }
 
+val downloadIntegrationPaper = tasks.register("downloadIntegrationPaper") {
+    description = "Downloads the pinned Paper server jar used by the integration tests."
+    group = "verification"
+    val out = integrationPaperJarProvider.get().asFile
+    val version = paperMcVersion
+    val build = paperBuildNumber
+    val expectedSha = paperServerSha
+    inputs.property("paperVersion", version)
+    inputs.property("paperBuild", build)
+    inputs.property("sha256", expectedSha)
+    outputs.file(out)
+    doLast {
+        fun sha256(file: java.io.File): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(file.readBytes())
+                .joinToString("") { "%02x".format(it) }
+
+        // Verify any cached jar too; re-download if missing or tampered with.
+        if (out.exists() && sha256(out) == expectedSha) return@doLast
+        if (out.exists()) {
+            logger.lifecycle("Paper jar checksum mismatch; re-downloading")
+            out.delete()
+        }
+        out.parentFile.mkdirs()
+        val tmp = out.resolveSibling(out.name + ".download")
+        val url = URI.create(
+            "https://fill-data.papermc.io/v1/objects/$expectedSha/paper-$version-$build.jar"
+        ).toURL()
+        url.openStream().use { input ->
+            Files.copy(input, tmp.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+        val actual = sha256(tmp)
+        check(actual == expectedSha) {
+            "Paper jar SHA-256 mismatch: expected $expectedSha but got $actual. " +
+                "Update paperServerSha256 and the pinned Paper build only after verifying the new artifact."
+        }
+        Files.move(tmp.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+}
+
 val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
     val lpFile = layout.buildDirectory.file("integration-libs/LuckPerms-Bukkit.jar")
     val serverDir = layout.buildDirectory.dir("integration-server")
     val shadowJarFile = layout.buildDirectory.file("libs/plugin-${project.version}-all.jar")
-    val runDir = layout.projectDirectory.dir("run")
     dependsOn("shadowJar", "downloadLuckPerms")
     inputs.file(shadowJarFile)
     inputs.file(lpFile)
@@ -106,20 +155,6 @@ val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
             """.trimIndent() + "\n"
         )
 
-        // Copy runtime server files provisioned by run-paper (versions/libraries/cache/.paper) if available
-        val run = runDir.asFile
-        if (run.exists()) {
-            listOf("versions", "libraries", "cache", ".paper").forEach { name ->
-                val src = run.resolve(name)
-                if (src.exists()) {
-                    val dest = dir.resolve(name)
-                    if (!dest.exists()) {
-                        src.copyRecursively(dest, overwrite = true)
-                    }
-                }
-            }
-        }
-
         val pluginJar = shadowJarFile.get().asFile
         Files.copy(pluginJar.toPath(), pluginsDir.resolve("EdenMcp.jar").toPath(), StandardCopyOption.REPLACE_EXISTING)
 
@@ -143,17 +178,12 @@ tasks {
 
     test {
         dependsOn(prepareIntegrationServer)
+        if (!paperJarOverride.isPresent) {
+            dependsOn(downloadIntegrationPaper)
+        }
         useJUnitPlatform()
 
-        val paperJarPath = providers.gradleProperty("integration.paperJar")
-            .orElse(providers.provider {
-                val inServer = layout.buildDirectory.file("integration-server/versions/26.3/paper-26.3.jar").get().asFile
-                if (inServer.exists()) inServer.absolutePath
-                else {
-                    val f = layout.projectDirectory.file("run/versions/26.3/paper-26.3.jar").asFile
-                    if (f.exists()) f.absolutePath else ""
-                }
-            })
+        val paperJarPath = paperJarOverride.orElse(integrationPaperJarProvider.get().asFile.absolutePath)
         val serverDirPath = layout.buildDirectory.dir("integration-server").map { it.asFile.absolutePath }
         val javaBin = providers.provider { System.getProperty("java.home") + "/bin/java" }
 
@@ -171,7 +201,7 @@ tasks {
     }
 
     runServer {
-        minecraftVersion("26.3")
+        minecraftVersion(paperMcVersion)
         jvmArgs("-Xms2G", "-Xmx2G", "-Dcom.mojang.eula.agree=true")
     }
 
