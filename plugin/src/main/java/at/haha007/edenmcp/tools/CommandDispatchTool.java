@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
 
 public final class CommandDispatchTool implements McpTool {
+    private static final int MAX_COMMAND_LENGTH = 8192;
+
     private final Plugin plugin;
     private final AtomicReference<CommandClassification> classification;
     private final Logger logger;
@@ -55,8 +57,14 @@ public final class CommandDispatchTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        String normalized = CommandClassification.normalize(
-                context.arguments().get("command") == null ? null : String.valueOf(context.arguments().get("command")));
+        String command;
+        try {
+            command = ToolArgs.requiredString(context.arguments(), "command");
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        if (command.length() > MAX_COMMAND_LENGTH) return ToolResult.error("Command is too long");
+        String normalized = CommandClassification.normalize(command);
         if (normalized == null) return ToolResult.error("Missing or invalid command");
 
         CapabilityLevel effective = classification.get().classify(normalized);

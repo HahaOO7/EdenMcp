@@ -84,11 +84,11 @@ class SparkDataStoreTest {
         Files.writeString(tempDir.resolve("notes.txt"), "notes");
         SparkDataStore store = new SparkDataStore(tempDir);
 
-        assertTrue(store.list("all", 10).stream()
+        assertTrue(store.list("all", 10).files().stream()
                 .anyMatch(f -> "profile".equals(f.get("type"))));
-        assertTrue(store.list("all", 10).stream()
+        assertTrue(store.list("all", 10).files().stream()
                 .anyMatch(f -> "heapdump".equals(f.get("type"))));
-        assertTrue(store.list("all", 10).stream()
+        assertTrue(store.list("all", 10).files().stream()
                 .noneMatch(f -> "notes.txt".equals(f.get("name"))));
     }
 }

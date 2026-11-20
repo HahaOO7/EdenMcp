@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -20,6 +21,9 @@ import java.util.logging.Logger;
 final class SparkCommandRunner {
     private static final String COMPONENT = "net.kyori.adventure.text.Component";
     private static final String PLAIN_SERIALIZER = "net.kyori.adventure.text.serializer.plaintext.PlainTextComponentSerializer";
+    private static final int MAX_OUTPUT_LINES = 200;
+    private static final int MAX_LINE_CHARS = 2000;
+    private static final int MAX_TOTAL_CHARS = 64_000;
 
     private final Plugin plugin;
     private final Logger logger;
@@ -33,20 +37,23 @@ final class SparkCommandRunner {
         this.settleMillis = settleMillis;
     }
 
-    record Result(String command, boolean dispatched, List<String> output) {
+    record Result(String command, boolean dispatched, List<String> output, boolean truncated) {
         Map<String, Object> toMap() {
-            return Map.of(
-                    "command", command,
-                    "dispatched", dispatched,
-                    "output", output
-            );
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("command", command);
+            out.put("dispatched", dispatched);
+            out.put("output", output);
+            out.put("truncated", truncated);
+            return out;
         }
     }
 
     @SuppressWarnings("BusyWait")
     Result run(String command, String action, ToolContext context) throws Exception {
         List<String> lines = new CopyOnWriteArrayList<>();
-        CommandSender capture = capturingSender(lines);
+        boolean[] truncated = {false};
+        int[] capturedChars = {0};
+        CommandSender capture = capturingSender(lines, truncated, capturedChars);
         CompletableFuture<Boolean> future = new CompletableFuture<>();
 
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -78,11 +85,11 @@ final class SparkCommandRunner {
                 + " command=" + command
                 + " dispatched=" + dispatched);
 
-        return new Result(command, dispatched, List.copyOf(lines));
+        return new Result(command, dispatched, List.copyOf(lines), truncated[0]);
     }
 
     @SuppressWarnings("JavaReflectionInvocation")
-    private static CommandSender capturingSender(List<String> lines) {
+    private static CommandSender capturingSender(List<String> lines, boolean[] truncated, int[] capturedChars) {
         // Paper exposes a sender implementation that forwards command feedback to a Consumer.
         // Using it keeps Bukkit's command dispatcher happy (it needs a vanilla-compatible
         // sender) while still capturing the reply for the MCP caller.
@@ -90,7 +97,20 @@ final class SparkCommandRunner {
             Class<?> forwarding = Class.forName("io.papermc.paper.commands.FeedbackForwardingSender");
             InvocationHandler handler = (proxy, method, args) -> {
                 if ("accept".equals(method.getName())) {
-                    if (args != null && args.length > 0) lines.add(render(args[0]));
+                    if (args != null && args.length > 0) {
+                        String line = render(args[0]);
+                        if (line.length() > MAX_LINE_CHARS) {
+                            line = line.substring(0, MAX_LINE_CHARS) + "...";
+                            truncated[0] = true;
+                        }
+                        if (lines.size() >= MAX_OUTPUT_LINES
+                                || capturedChars[0] + line.length() > MAX_TOTAL_CHARS) {
+                            truncated[0] = true;
+                        } else {
+                            lines.add(line);
+                            capturedChars[0] += line.length();
+                        }
+                    }
                     return null;
                 }
                 return switch (method.getName()) {

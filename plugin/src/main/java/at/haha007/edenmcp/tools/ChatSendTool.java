@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public final class ChatSendTool implements McpTool {
+    private static final int MAX_MESSAGE_LENGTH = 4096;
+
     private final Plugin plugin;
     private final Logger logger;
     private final boolean logVerbose;
@@ -56,8 +58,16 @@ public final class ChatSendTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        String message = context.arguments().get("message") == null ? null : String.valueOf(context.arguments().get("message"));
-        if (message == null || message.isBlank()) return ToolResult.error("Missing message");
+        String message;
+        String target;
+        try {
+            message = ToolArgs.requiredString(context.arguments(), "message");
+            target = ToolArgs.string(context.arguments(), "target");
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        if (message.isBlank()) return ToolResult.error("Missing message");
+        if (message.length() > MAX_MESSAGE_LENGTH) return ToolResult.error("Message is too long");
 
         long now = System.currentTimeMillis();
         while (true) {
@@ -67,10 +77,10 @@ public final class ChatSendTool implements McpTool {
             now = System.currentTimeMillis();
         }
 
-        String target = context.arguments().get("target") == null ? "broadcast" : String.valueOf(context.arguments().get("target"));
+        final String recipient = target == null ? "broadcast" : target;
         Component attributed = Component.text("[EdenMCP] " + message);
         try {
-            if (target.equalsIgnoreCase("broadcast") || target.isBlank()) {
+            if (recipient.equalsIgnoreCase("broadcast") || recipient.isBlank()) {
                 runSync(() -> {
                     Bukkit.getServer().broadcast(attributed);
                     return null;
@@ -79,9 +89,9 @@ public final class ChatSendTool implements McpTool {
                 return ToolResult.ok(Map.of("sent", "broadcast", "message", message));
             } else {
                 String sentTo = runSync(() -> {
-                    Player p = Bukkit.getPlayerExact(target);
+                    Player p = Bukkit.getPlayerExact(recipient);
                     if (p == null) {
-                        try { p = Bukkit.getPlayer(UUID.fromString(target)); } catch (Exception ignored) {}
+                        try { p = Bukkit.getPlayer(UUID.fromString(recipient)); } catch (Exception ignored) {}
                     }
                     if (p == null) return null;
                     p.sendMessage(attributed);

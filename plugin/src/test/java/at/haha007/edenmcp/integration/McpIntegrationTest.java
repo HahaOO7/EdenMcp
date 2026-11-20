@@ -871,6 +871,75 @@ public class McpIntegrationTest {
     }
 
     @Test
+    @Order(42)
+    void toolArgumentsAreStrictlyTyped() throws Exception {
+        // Non-string values must not be coerced into tool string arguments.
+        JsonObject badContent = new JsonObject();
+        badContent.addProperty("path", "strict-arg-test.txt");
+        badContent.addProperty("content", 42);
+        assertTrue(toolCall("edenmcp.file.write", badContent, 700).get("isError").getAsBoolean());
+
+        JsonObject badCommand = new JsonObject();
+        badCommand.addProperty("command", 123);
+        assertTrue(toolCall("edenmcp.command.dispatch", badCommand, 701).get("isError").getAsBoolean());
+
+        JsonObject badMessage = new JsonObject();
+        badMessage.addProperty("message", 123);
+        assertTrue(toolCall("edenmcp.chat.send", badMessage, 702).get("isError").getAsBoolean());
+
+        JsonObject badMode = new JsonObject();
+        badMode.addProperty("mode", 1);
+        assertTrue(toolCall("edenmcp.mode.set", badMode, 703).get("isError").getAsBoolean());
+
+        JsonObject badFilter = new JsonObject();
+        badFilter.addProperty("filter", 123);
+        assertTrue(toolCall("edenmcp.logs.read", badFilter, 704).get("isError").getAsBoolean());
+
+        JsonObject badLimit = new JsonObject();
+        badLimit.addProperty("limit", "not-a-number");
+        assertTrue(toolCall("edenmcp.logs.read", badLimit, 705).get("isError").getAsBoolean());
+    }
+
+    @Test
+    @Order(43)
+    void listToolsReportTotalAndHasMore() throws Exception {
+        JsonObject limited = toolCall("edenmcp.players.list", args("limit", 1), 710);
+        assertFalse(limited.get("isError").getAsBoolean(), limited.toString());
+        JsonObject players = payloadJson(limited);
+        assertTrue(players.has("total"), players.toString());
+        assertTrue(players.has("hasMore"), players.toString());
+        assertTrue(players.get("count").getAsInt() <= 1, players.toString());
+
+        JsonObject plugins = payloadJson(toolCall("edenmcp.plugins.list", args("limit", 1), 711));
+        assertTrue(plugins.has("total"), plugins.toString());
+        assertTrue(plugins.has("hasMore"), plugins.toString());
+        assertTrue(plugins.get("count").getAsInt() <= 1, plugins.toString());
+
+        JsonObject hooks = payloadJson(toolCall("edenmcp.hooks.list", args("limit", 1), 712));
+        assertTrue(hooks.has("total"), hooks.toString());
+        assertTrue(hooks.has("hasMore"), hooks.toString());
+        assertTrue(hooks.get("count").getAsInt() <= 1, hooks.toString());
+
+        JsonObject status = payloadJson(toolCall("edenmcp.server.status", args("worldLimit", 1), 713));
+        assertTrue(status.has("worldCount"), status.toString());
+        assertTrue(status.has("worldsTruncated"), status.toString());
+        assertTrue(status.getAsJsonArray("worlds").size() <= 1, status.toString());
+
+        JsonObject spark = payloadJson(toolCall("edenmcp.spark.data.list", args("limit", 1), 714));
+        assertTrue(spark.has("total"), spark.toString());
+        assertTrue(spark.has("hasMore"), spark.toString());
+        assertTrue(spark.getAsJsonArray("files").size() <= 1, spark.toString());
+    }
+
+    @Test
+    @Order(44)
+    void logsReadReportsTruncation() throws Exception {
+        JsonObject res = toolCall("edenmcp.logs.read", new JsonObject(), 720);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        assertTrue(payloadJson(res).has("truncated"), res.toString());
+    }
+
+    @Test
     @Order(50)
     void keyRotationInvalidatesSessionsAndIssuesNewKey() throws Exception {
         String oldKey = accessKey;

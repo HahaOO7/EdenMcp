@@ -108,18 +108,34 @@ public final class AccessKeyManager {
         return HexFormat.of().formatHex(raw);
     }
 
-    /** Atomically replace the key file, keeping it owner-only. */
+    /** Atomically replace the key file, keeping it owner-only and cleaning up on failure. */
     private void writeKey(String key) throws IOException {
-        Path tmp = keyFile.resolveSibling(keyFile.getFileName() + ".tmp");
-        Files.writeString(tmp, key + System.lineSeparator(), StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-        PrivateFileUtil.setOwnerOnly(tmp);
+        // A unique temp name avoids a race between concurrent rotations on the same file.
+        Path tmp = keyFile.resolveSibling(keyFile.getFileName() + ".tmp-"
+                + HexFormat.of().formatHex(randomBytes()));
         try {
-            Files.move(tmp, keyFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, keyFile, StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(tmp, key + System.lineSeparator(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            PrivateFileUtil.setOwnerOnly(tmp);
+            try {
+                Files.move(tmp, keyFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, keyFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+            PrivateFileUtil.setOwnerOnly(keyFile);
+        } finally {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // Do not mask the original failure; a leftover temp file is harmless.
+            }
         }
-        PrivateFileUtil.setOwnerOnly(keyFile);
+    }
+
+    private static byte[] randomBytes() {
+        byte[] bytes = new byte[8];
+        RANDOM.nextBytes(bytes);
+        return bytes;
     }
 
     private void loadAdditionalKeys() {

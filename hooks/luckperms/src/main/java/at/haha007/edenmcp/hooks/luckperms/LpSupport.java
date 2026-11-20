@@ -16,6 +16,7 @@ import net.luckperms.api.node.types.SuffixNode;
 import net.luckperms.api.query.QueryOptions;
 import net.luckperms.api.track.Track;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -31,6 +32,7 @@ import java.util.regex.Pattern;
 final class LpSupport {
     static final int MAX_NODES = 200;
     static final int MAX_AUDIT = 200;
+    static final int MAX_LIST = 200;
 
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final UUID AUDIT_SOURCE = UUID.nameUUIDFromBytes("EdenMcp".getBytes(StandardCharsets.UTF_8));
@@ -49,9 +51,12 @@ final class LpSupport {
         }
     }
 
-    static String stringArg(Map<String, Object> args, String key) {
+    /** Reads a textual argument; numbers, booleans and objects are rejected. */
+    static String stringArg(Map<String, Object> args, String key) throws InvalidArgument {
         Object value = args == null ? null : args.get(key);
-        return value == null ? null : String.valueOf(value).trim();
+        if (value == null) return null;
+        if (!(value instanceof String text)) throw new InvalidArgument("Invalid " + key);
+        return text.trim();
     }
 
     static String requiredArg(Map<String, Object> args, String key) throws InvalidArgument {
@@ -80,20 +85,29 @@ final class LpSupport {
 
     static int intArg(Map<String, Object> args, String key, int defaultValue, int min, int max)
             throws InvalidArgument {
-        String value = stringArg(args, key);
-        if (value == null || value.isEmpty()) {
-            return defaultValue;
-        }
-        final int parsed;
-        try {
-            parsed = Integer.parseInt(value);
-        } catch (NumberFormatException e) {
-            throw new InvalidArgument("Invalid " + key);
-        }
+        Object value = args == null ? null : args.get(key);
+        if (value == null) return defaultValue;
+        Integer parsed = integerValue(value);
+        if (parsed == null) throw new InvalidArgument("Invalid " + key);
         if (parsed < min || parsed > max) {
             throw new InvalidArgument(key + " must be between " + min + " and " + max);
         }
         return parsed;
+    }
+
+    /** Accepts JSON numbers (including integral decimals) and numeric strings, nothing else. */
+    private static Integer integerValue(Object value) {
+        try {
+            if (value instanceof Number number) {
+                return new BigDecimal(number.toString()).toBigIntegerExact().intValueExact();
+            }
+            if (value instanceof String text) {
+                return Integer.valueOf(text.trim());
+            }
+        } catch (ArithmeticException | NumberFormatException ignored) {
+            // Reported as an invalid argument by the caller.
+        }
+        return null;
     }
 
     static int boundedLimitArg(Map<String, Object> args, int defaultValue, int max) throws InvalidArgument {
@@ -101,13 +115,14 @@ final class LpSupport {
     }
 
     static boolean boolArg(Map<String, Object> args, String key, boolean defaultValue) throws InvalidArgument {
-        String value = stringArg(args, key);
-        if (value == null || value.isEmpty()) {
-            return defaultValue;
-        }
-        if (value.equalsIgnoreCase("true")) return true;
-        if (value.equalsIgnoreCase("false")) return false;
-        throw new InvalidArgument("Invalid " + key);
+        Object value = args == null ? null : args.get(key);
+        if (value == null) return defaultValue;
+        return switch (value) {
+            case Boolean b -> b;
+            case String text when text.equalsIgnoreCase("true") -> true;
+            case String text when text.equalsIgnoreCase("false") -> false;
+            default -> throw new InvalidArgument("Invalid " + key);
+        };
     }
 
     static Instant expiryArg(Map<String, Object> args) throws InvalidArgument {
@@ -203,11 +218,11 @@ final class LpSupport {
         }
         Map<String, String> pairs = new LinkedHashMap<>();
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            if (entry.getKey() == null || entry.getValue() == null) {
-                continue;
+            if (!(entry.getKey() instanceof String rawKey) || !(entry.getValue() instanceof String rawValue)) {
+                throw new InvalidArgument("contexts must map strings to strings");
             }
-            String key = String.valueOf(entry.getKey()).trim();
-            String value = String.valueOf(entry.getValue()).trim();
+            String key = rawKey.trim();
+            String value = rawValue.trim();
             if (!key.isEmpty() && !value.isEmpty()) {
                 pairs.put(key, value);
             }
@@ -297,6 +312,31 @@ final class LpSupport {
         }
         out.put("contexts", node.getContexts().toMap());
         return out;
+    }
+
+    /** Truncates a list to the response bound without mutating the original. */
+    static <T> List<T> limited(List<T> values, int limit) {
+        return values.size() > limit ? List.copyOf(values.subList(0, limit)) : values;
+    }
+
+    /** Truncates a map to the response bound without mutating the original. */
+    static <K, V> Map<K, V> limited(Map<K, V> values, int limit) {
+        if (values.size() <= limit) return values;
+        Map<K, V> out = new LinkedHashMap<>();
+        int i = 0;
+        for (Map.Entry<K, V> entry : values.entrySet()) {
+            if (i++ >= limit) break;
+            out.put(entry.getKey(), entry.getValue());
+        }
+        return out;
+    }
+
+    static boolean hasMore(Collection<?> values, int limit) {
+        return values.size() > limit;
+    }
+
+    static boolean hasMore(Map<?, ?> values, int limit) {
+        return values.size() > limit;
     }
 
     static List<Map<String, Object>> nodeMaps(Collection<? extends Node> nodes, int limit) {

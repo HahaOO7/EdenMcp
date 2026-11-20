@@ -97,10 +97,11 @@ public final class EdenMcpPlugin extends JavaPlugin {
             // Core tools
             this.commandDispatchTool = new CommandDispatchTool(this, edenConfig.commandClassification(),
                     getLogger(), edenConfig.logVerbose(), edenConfig.tools());
-            registry.register(new StatusTool());
-            registry.register(new PluginsListTool());
-            registry.register(new PlayersListTool());
-            registry.register(new HooksListTool(hookManager));
+            int listMaxEntries = edenConfig.tools().listMaxEntries();
+            registry.register(new StatusTool(listMaxEntries));
+            registry.register(new PluginsListTool(listMaxEntries));
+            registry.register(new PlayersListTool(listMaxEntries));
+            registry.register(new HooksListTool(hookManager, listMaxEntries));
             registry.register(new ModeGetTool(modeRef));
             registry.register(new ModeSetTool(modeRef, audit, m -> {
                 if (httpServer != null) httpServer.broadcastModeChange(m);

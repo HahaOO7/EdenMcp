@@ -126,14 +126,23 @@ public final class LuckPermsHook implements Hook {
 
         @Override
         public Map<String, Object> inputSchema() {
-            return Map.of("type", "object", "properties", Map.of());
+            return Map.of("type", "object", "properties", Map.of("limit",
+                    Map.of("type", "integer", "minimum", 1, "maximum", LpSupport.MAX_LIST,
+                            "description", "Maximum number of groups to return (default " + LpSupport.MAX_LIST + ")")));
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) {
-            List<String> groups = api.getGroupManager().getLoadedGroups().stream()
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
+            List<String> all = api.getGroupManager().getLoadedGroups().stream()
                     .map(Group::getName).sorted().toList();
-            return ToolResult.ok(Map.of("groups", groups, "count", groups.size()));
+            List<String> groups = LpSupport.limited(all, limit);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("groups", groups);
+            out.put("count", groups.size());
+            out.put("total", all.size());
+            out.put("hasMore", LpSupport.hasMore(all, limit));
+            return ToolResult.ok(out);
         }
     }
 
@@ -211,6 +220,9 @@ public final class LuckPermsHook implements Hook {
             var meta = group.getCachedData().getMetaData(query);
             OptionalInt weight = group.getWeight();
             Collection<Node> nodes = group.getNodes();
+            List<String> allInherited = group.getInheritedGroups(query).stream()
+                    .map(Group::getName).sorted().distinct().toList();
+            Map<String, List<String>> allMeta = meta.getMeta();
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("name", group.getName());
@@ -218,9 +230,11 @@ public final class LuckPermsHook implements Hook {
             out.put("weight", weight.isPresent() ? weight.getAsInt() : null);
             out.put("nodeCount", nodes.size());
             out.put("nodes", LpSupport.nodeMaps(nodes, limit));
-            out.put("inheritedGroups", group.getInheritedGroups(query).stream()
-                    .map(Group::getName).sorted().distinct().toList());
-            out.put("meta", meta.getMeta());
+            out.put("nodesTruncated", LpSupport.hasMore(nodes, limit));
+            out.put("inheritedGroups", LpSupport.limited(allInherited, limit));
+            out.put("inheritedTruncated", LpSupport.hasMore(allInherited, limit));
+            out.put("meta", LpSupport.limited(allMeta, limit));
+            out.put("metaTruncated", LpSupport.hasMore(allMeta, limit));
             out.put("prefix", meta.getPrefix());
             out.put("suffix", meta.getSuffix());
             return ToolResult.ok(out);
@@ -240,14 +254,23 @@ public final class LuckPermsHook implements Hook {
 
         @Override
         public Map<String, Object> inputSchema() {
-            return Map.of("type", "object", "properties", Map.of());
+            return Map.of("type", "object", "properties", Map.of("limit",
+                    Map.of("type", "integer", "minimum", 1, "maximum", LpSupport.MAX_LIST,
+                            "description", "Maximum number of tracks to return (default " + LpSupport.MAX_LIST + ")")));
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) {
-            List<String> tracks = api.getTrackManager().getLoadedTracks().stream()
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
+            List<String> all = api.getTrackManager().getLoadedTracks().stream()
                     .map(Track::getName).sorted().toList();
-            return ToolResult.ok(Map.of("tracks", tracks, "count", tracks.size()));
+            List<String> tracks = LpSupport.limited(all, limit);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("tracks", tracks);
+            out.put("count", tracks.size());
+            out.put("total", all.size());
+            out.put("hasMore", LpSupport.hasMore(all, limit));
+            return ToolResult.ok(out);
         }
     }
 
@@ -266,31 +289,37 @@ public final class LuckPermsHook implements Hook {
         public Map<String, Object> inputSchema() {
             return Map.of("type", "object", "properties", Map.of(
                     "name", Map.of("type", "string"),
-                    "group", Map.of("type", "string")
+                    "group", Map.of("type", "string"),
+                    "limit", Map.of("type", "integer", "minimum", 1, "maximum", LpSupport.MAX_LIST,
+                            "description", "Maximum number of groups to return (default " + LpSupport.MAX_LIST + ")")
             ));
         }
 
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.requiredArg(args, "name");
+            int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
             Track track = api.getTrackManager().loadTrack(name).join()
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Track not found"));
-            List<String> groups = List.copyOf(track.getGroups());
+            List<String> allGroups = List.copyOf(track.getGroups());
+            List<String> groups = LpSupport.limited(allGroups, limit);
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("name", track.getName());
             out.put("groups", groups);
             out.put("count", groups.size());
+            out.put("total", allGroups.size());
+            out.put("hasMore", LpSupport.hasMore(allGroups, limit));
 
             String group = LpSupport.stringArg(args, "group");
             if (group != null && !group.isEmpty()) {
-                int index = groups.indexOf(group);
+                int index = allGroups.indexOf(group);
                 if (index < 0) {
                     throw new LpSupport.InvalidArgument("Group not on track");
                 }
                 out.put("index", index);
-                out.put("next", index + 1 < groups.size() ? groups.get(index + 1) : null);
-                out.put("previous", index > 0 ? groups.get(index - 1) : null);
+                out.put("next", index + 1 < allGroups.size() ? allGroups.get(index + 1) : null);
+                out.put("previous", index > 0 ? allGroups.get(index - 1) : null);
             }
             return ToolResult.ok(out);
         }
@@ -312,26 +341,31 @@ public final class LuckPermsHook implements Hook {
             return Map.of("type", "object", "properties", Map.of(
                     "username", Map.of("type", "string"),
                     "uuid", Map.of("type", "string"),
+                    "limit", Map.of("type", "integer", "minimum", 1, "maximum", LpSupport.MAX_LIST,
+                            "description", "Maximum number of groups to return (default " + LpSupport.MAX_LIST + ")"),
                     "contexts", Map.of("type", "object", "additionalProperties", Map.of("type", "string"))
             ));
         }
 
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
             User user = LpSupport.requireUser(api, args);
             QueryOptions query = LpSupport.queryOptions(api, user, args);
-            List<String> direct = user.getNodes(NodeType.INHERITANCE).stream()
+            List<String> allDirect = user.getNodes(NodeType.INHERITANCE).stream()
                     .map(InheritanceNode::getGroupName).sorted().distinct().toList();
-            List<String> effective = user.getInheritedGroups(query).stream()
+            List<String> allEffective = user.getInheritedGroups(query).stream()
                     .map(Group::getName).sorted().distinct().toList();
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("uuid", user.getUniqueId().toString());
             out.put("username", user.getUsername());
             out.put("primaryGroup", user.getPrimaryGroup());
-            out.put("directGroups", direct);
-            out.put("groups", effective);
-            out.put("count", effective.size());
+            out.put("directGroups", LpSupport.limited(allDirect, limit));
+            out.put("groups", LpSupport.limited(allEffective, limit));
+            out.put("count", Math.min(allEffective.size(), limit));
+            out.put("total", allEffective.size());
+            out.put("hasMore", LpSupport.hasMore(allEffective, limit) || LpSupport.hasMore(allDirect, limit));
             return ToolResult.ok(out);
         }
     }
@@ -384,6 +418,7 @@ public final class LuckPermsHook implements Hook {
             actions.sort(Comparator.comparing(Action::getTimestamp).reversed());
 
             List<Map<String, Object>> entries = new ArrayList<>();
+            boolean hasMore = false;
             for (Action action : actions) {
                 if (type != null && action.getTarget().getType() != type) continue;
                 if (since != null && action.getTimestamp().isBefore(since)) continue;
@@ -392,14 +427,18 @@ public final class LuckPermsHook implements Hook {
                     String targetUuid = action.getTarget().getUniqueId().map(UUID::toString).orElse("");
                     if (!target.equalsIgnoreCase(targetName) && !target.equalsIgnoreCase(targetUuid)) continue;
                 }
+                if (entries.size() >= limit) {
+                    hasMore = true;
+                    break;
+                }
                 entries.add(LpSupport.actionMap(action));
-                if (entries.size() >= limit) break;
             }
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("actions", entries);
             out.put("count", entries.size());
             out.put("limit", limit);
+            out.put("hasMore", hasMore);
             return ToolResult.ok(out);
         }
     }
@@ -748,10 +787,12 @@ public final class LuckPermsHook implements Hook {
                     action.toLowerCase(Locale.ROOT) + " on track " + track.getName(),
                     Action.Target.Type.TRACK, track.getName(), null);
 
+            List<String> allGroups = List.copyOf(track.getGroups());
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("user", LpSupport.holderMap(user));
             out.put("track", track.getName());
-            out.put("groups", List.copyOf(track.getGroups()));
+            out.put("groups", LpSupport.limited(allGroups, LpSupport.MAX_LIST));
+            out.put("hasMore", LpSupport.hasMore(allGroups, LpSupport.MAX_LIST));
             return ToolResult.ok(out);
         }
     }

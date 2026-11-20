@@ -148,7 +148,7 @@ final class SparkProfilerTool implements McpTool {
     private List<Map<String, Object>> recentProfiles() {
         if (store == null) return List.of();
         try {
-            return store.list("profile", 3);
+            return store.list("profile", 3).files();
         } catch (Exception e) {
             return List.of();
         }

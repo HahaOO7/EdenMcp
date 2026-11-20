@@ -227,6 +227,7 @@ mcp:
     # chat-min-interval-ms: 250      # global chat throttle; 0 disables it
     # chat-sync-timeout-seconds: 5
     # command-dispatch-timeout-seconds: 10
+    # list-max-entries: 200          # cap for built-in list tools (reports hasMore)
     logs:
       # default-limit: 100
       # max-limit: 500

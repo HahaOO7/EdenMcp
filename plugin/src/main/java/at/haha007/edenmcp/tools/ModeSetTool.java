@@ -46,9 +46,13 @@ public final class ModeSetTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        Object m = context.arguments().get("mode");
-        if (m == null) return ToolResult.error("Missing 'mode'");
-        OperatingMode next = OperatingMode.parse(String.valueOf(m), null);
+        String requested;
+        try {
+            requested = ToolArgs.requiredString(context.arguments(), "mode");
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        OperatingMode next = OperatingMode.parse(requested, null);
         if (next == null) return ToolResult.error("Invalid mode");
         if (!securityPolicy.canEnter(next)) {
             return ToolResult.error("Unsafe mode is locked by server policy; use the server console");

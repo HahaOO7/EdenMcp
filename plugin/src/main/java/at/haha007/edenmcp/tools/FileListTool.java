@@ -67,9 +67,9 @@ public final class FileListTool implements McpTool {
         boolean recursive;
         int depth;
         try {
-            recursive = FileToolArgs.bool(context.arguments(), "recursive", false);
+            recursive = ToolArgs.bool(context.arguments(), "recursive");
             depth = recursive
-                    ? FileToolArgs.integer(context.arguments(), "depth", Math.min(5, maxDepth), 1, maxDepth)
+                    ? ToolArgs.integer(context.arguments(), "depth", Math.min(5, maxDepth), 1, maxDepth)
                     : 1;
             ServerFileAccess.Listing listing = files.list(path, maxEntries, recursive, depth, pattern);
             return ToolResult.ok(Map.of("path", path.isBlank() ? "." : path,

@@ -64,10 +64,12 @@ final class SparkDataListTool implements McpTool {
             Map<String, Object> args = context.arguments();
             String kind = SparkArgs.enumeration(args, "kind", "all", KINDS);
             int limit = SparkArgs.integer(args, "limit", 50, 1, 200);
-            List<Map<String, Object>> files = store.list(kind, limit);
+            SparkDataStore.Listing listing = store.list(kind, limit);
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("count", files.size());
-            out.put("files", files);
+            out.put("count", listing.files().size());
+            out.put("total", listing.total());
+            out.put("hasMore", listing.hasMore());
+            out.put("files", listing.files());
             return ToolResult.ok(out);
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());

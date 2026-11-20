@@ -56,9 +56,9 @@ public final class FileWriteTool implements McpTool {
         Object rawPath = context.arguments().get("path");
         Object rawContent = context.arguments().get("content");
         if (!(rawPath instanceof String path) || path.isBlank()) return ToolResult.error("Missing or invalid path");
-        if (rawContent == null) return ToolResult.error("Missing content");
+        if (!(rawContent instanceof String content)) return ToolResult.error("Missing or invalid content");
         try {
-            ServerFileAccess.TextFile file = files.write(path, String.valueOf(rawContent), maxBytes);
+            ServerFileAccess.TextFile file = files.write(path, content, maxBytes);
             audit.fileWrite(context.callerId(), file.path(), context.activeMode().name());
             return ToolResult.ok(Map.of("path", file.path(), "bytes", file.bytes()));
         } catch (IOException e) {

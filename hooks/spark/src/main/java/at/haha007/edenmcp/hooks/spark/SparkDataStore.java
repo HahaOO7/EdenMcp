@@ -13,13 +13,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -50,8 +50,16 @@ final class SparkDataStore {
         }
     }
 
-    List<Map<String, Object>> list(String kind, int limit) throws IOException {
-        List<Map<String, Object>> files = new ArrayList<>();
+    /** A bounded listing: at most {@code limit} newest entries plus truncation metadata. */
+    record Listing(List<Map<String, Object>> files, int total, boolean hasMore) {}
+
+    Listing list(String kind, int limit) throws IOException {
+        Comparator<Map<String, Object>> newestFirst = Comparator.comparing(
+                m -> String.valueOf(m.get("lastModified")), Comparator.reverseOrder());
+        // Keep only the newest `limit` entries instead of materializing and sorting every file.
+        PriorityQueue<Map<String, Object>> newest = new PriorityQueue<>(
+                Comparator.comparing(m -> String.valueOf(m.get("lastModified"))));
+        int total = 0;
         try (Stream<Path> paths = Files.list(root)) {
             for (Path path : paths.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
                 String name = path.getFileName().toString();
@@ -65,11 +73,17 @@ final class SparkDataStore {
                 entry.put("mimeType", mimeOf(type));
                 entry.put("size", attrs.size());
                 entry.put("lastModified", attrs.lastModifiedTime().toInstant().toString());
-                files.add(entry);
+                total++;
+                if (newest.size() < limit) {
+                    newest.add(entry);
+                } else if (newestFirst.compare(entry, newest.peek()) > 0) {
+                    newest.poll();
+                    newest.add(entry);
+                }
             }
         }
-        files.sort(Comparator.comparing(m -> String.valueOf(m.get("lastModified")), Comparator.reverseOrder()));
-        return files.stream().limit(limit).toList();
+        List<Map<String, Object>> files = newest.stream().sorted(newestFirst).toList();
+        return new Listing(files, total, total > files.size());
     }
 
     FileHandle open(String name) throws IOException {

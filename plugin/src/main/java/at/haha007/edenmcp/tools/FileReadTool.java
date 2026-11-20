@@ -53,8 +53,8 @@ public final class FileReadTool implements McpTool {
         int offset;
         int limit;
         try {
-            offset = FileToolArgs.integer(context.arguments(), "offset", 0, 0, Integer.MAX_VALUE);
-            limit = FileToolArgs.integer(context.arguments(), "limit", Integer.MAX_VALUE, 1, Integer.MAX_VALUE);
+            offset = ToolArgs.integer(context.arguments(), "offset", 0, 0, Integer.MAX_VALUE);
+            limit = ToolArgs.integer(context.arguments(), "limit", Integer.MAX_VALUE, 1, Integer.MAX_VALUE);
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());
         }

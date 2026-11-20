@@ -117,7 +117,7 @@ final class SparkDiagnosticsTool implements McpTool {
     private List<Map<String, Object>> recentHeapDumps() {
         if (store == null) return List.of();
         try {
-            return store.list("heapdump", 3);
+            return store.list("heapdump", 3).files();
         } catch (Exception e) {
             return List.of();
         }

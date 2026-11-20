@@ -66,10 +66,10 @@ public record EdenConfig(
                              int logsDefaultLimit, int logsMaxLimit,
                              int logsMaxScanBytes, int logsMaxPatternLength,
                              int filesMaxReadBytes, int filesMaxWriteBytes, int filesMaxListEntries,
-                             int filesMaxListDepth) {
+                             int filesMaxListDepth, int listMaxEntries) {
         public static ToolConfig defaults() {
             return new ToolConfig(250, 5, 10, 100, 500, 1024 * 1024, 200,
-                    4 * 1024 * 1024, 1024 * 1024, 500, 10);
+                    4 * 1024 * 1024, 1024 * 1024, 500, 10, 200);
         }
     }
 
@@ -143,10 +143,11 @@ public record EdenConfig(
         int filesMaxWriteBytes = Math.max(1024, cfg.getInt("mcp.tools.files.max-write-bytes", 1024 * 1024));
         int filesMaxListEntries = Math.max(1, cfg.getInt("mcp.tools.files.max-list-entries", 500));
         int filesMaxListDepth = Math.max(1, cfg.getInt("mcp.tools.files.max-list-depth", 10));
+        int listMaxEntries = Math.max(1, cfg.getInt("mcp.tools.list-max-entries", 200));
         ToolConfig tools = new ToolConfig(chatMinIntervalMs, chatSyncTimeoutSeconds,
                 commandDispatchTimeoutSeconds, logsDefaultLimit, logsMaxLimit,
                 logsMaxScanBytes, logsMaxPatternLength, filesMaxReadBytes, filesMaxWriteBytes,
-                filesMaxListEntries, filesMaxListDepth);
+                filesMaxListEntries, filesMaxListDepth, listMaxEntries);
 
         boolean logCalls = cfg.getBoolean("audit.log-tool-calls", true);
         boolean logMode = cfg.getBoolean("audit.log-mode-changes", true);
