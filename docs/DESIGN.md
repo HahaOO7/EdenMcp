@@ -231,7 +231,8 @@ mcp:
     logs:
       # default-limit: 100
       # max-limit: 500
-      # max-scan-bytes: 1048576
+      # max-scan-bytes: 1048576         # tail window for plain logs
+      # max-decompressed-bytes: 16777216 # cap for .gz/.zip decompression (zip-bomb protection)
       # max-pattern-length: 200
     files:
       # max-read-bytes: 4194304   # edenmcp.file.read response cap

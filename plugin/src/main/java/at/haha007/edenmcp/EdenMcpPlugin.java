@@ -111,7 +111,10 @@ public final class EdenMcpPlugin extends JavaPlugin {
                     edenConfig.tools().filesMaxListDepth()));
             registry.register(new FileReadTool(serverFiles, edenConfig.tools().filesMaxReadBytes()));
             registry.register(new FileWriteTool(serverFiles, edenConfig.tools().filesMaxWriteBytes(), audit));
-            registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate(), edenConfig.tools()));
+            Path logsDir = resolveLogDir();
+            boolean logsRequireModerate = edenConfig.policy().logsRequireModerate();
+            registry.register(new LogsListTool(logsDir, logsRequireModerate, edenConfig.tools()));
+            registry.register(new LogsReadTool(logsDir, logsRequireModerate, edenConfig.tools()));
             registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose(), edenConfig.tools()));
             registry.register(commandDispatchTool);
 
@@ -255,12 +258,12 @@ public final class EdenMcpPlugin extends JavaPlugin {
         }
     }
 
-    private Path resolveLogPath() {
+    private Path resolveLogDir() {
         // Common Paper/Spigot locations
-        Path p = Path.of("logs", "latest.log");
-        if (Files.exists(p)) return p.toAbsolutePath();
-        Path p2 = getServer().getWorldContainer().toPath().resolve("logs").resolve("latest.log");
-        if (Files.exists(p2)) return p2.toAbsolutePath();
+        Path p = Path.of("logs");
+        if (Files.isDirectory(p)) return p.toAbsolutePath();
+        Path p2 = getServer().getWorldContainer().toPath().resolve("logs");
+        if (Files.isDirectory(p2)) return p2.toAbsolutePath();
         return p.toAbsolutePath();
     }
 

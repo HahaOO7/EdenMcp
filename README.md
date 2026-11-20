@@ -68,7 +68,7 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `mcp.policy.allow-unsafe-at-runtime` | Set `false` to require the console for escalation to `unsafe` |
 | `mcp.tools.chat-min-interval-ms` | Global chat-send throttle (default `250`; `0` disables it) |
 | `mcp.tools.chat-sync-timeout-seconds` / `command-dispatch-timeout-seconds` | Main-thread wait limits for chat and console commands |
-| `mcp.tools.logs` | Log-read default/max lines, tail scan bytes, max regex filter length |
+| `mcp.tools.logs` | Log-read default/max lines, tail scan bytes, decompression cap, max regex filter length |
 | `mcp.tools.files` | Max entries / recursion depth for `edenmcp.file.list`, max bytes for `edenmcp.file.read` / `edenmcp.file.write` |
 | `mcp.tools.list-max-entries` | Max entries returned by the built-in list tools (default `200`); responses include `hasMore` |
 | `audit.max-value-length` | Truncation length for sanitized audit values (default `200`) |
@@ -108,7 +108,8 @@ Read-only (`safe`):
 - `edenmcp.players.list` — online players and metadata
 - `edenmcp.plugins.list` — installed plugins and enabled state
 - `edenmcp.hooks.list` — available/enabled hooks
-- `edenmcp.logs.read` — bounded recent log lines with optional filter; reports `truncated` when older lines were skipped, and rejects malformed UTF-8/binary content
+- `edenmcp.logs.list` — list available log files (plain, `.gz`, `.zip`) in `logs/`
+- `edenmcp.logs.read` — bounded recent log lines from `latest.log` or a `file` from `logs.list`; `.gz`/`.zip` are decompressed with a size cap, and results report `truncated` and reject malformed UTF-8/binary content
 - `edenmcp.file.list` — list a directory under the server root (default: root); optional `recursive`, `depth`, and glob `pattern`, with `truncated` reporting
 - `edenmcp.file.read` — read a UTF-8 text file (relative path, bounded size); optional `offset`/`limit` return a line-aligned slice with `hasMore`
 - `edenmcp.mode.get` — current mode

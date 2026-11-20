@@ -2,10 +2,10 @@ package at.haha007.edenmcp.tools;
 
 import at.haha007.edenmcp.api.CapabilityLevel;
 import at.haha007.edenmcp.api.SideEffects;
-import at.haha007.edenmcp.core.config.EdenConfig;
 import at.haha007.edenmcp.api.McpTool;
 import at.haha007.edenmcp.api.ToolContext;
 import at.haha007.edenmcp.api.ToolResult;
+import at.haha007.edenmcp.core.config.EdenConfig;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -31,32 +31,26 @@ public final class LogsReadTool implements McpTool {
     // The first character class excludes the quantifier characters, so the group
     // cannot be matched at multiple positions - avoids super-linear backtracking.
     private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
-    @Nullable private final Path logFile;
-    @Nullable private final Path serverRoot;
+    private final LogFileAccess logs;
     private final boolean requireModerate;
     private final int defaultLimit;
     private final int maxLimit;
     private final int maxScanBytes;
     private final int maxPatternLength;
 
-    public LogsReadTool(@Nullable Path logFile, boolean requireModerate, EdenConfig.ToolConfig tools) {
-        this.logFile = logFile;
+    public LogsReadTool(Path logsDir, boolean requireModerate, EdenConfig.ToolConfig tools) {
+        this.logs = new LogFileAccess(logsDir, tools.logsMaxDecompressedBytes());
         this.requireModerate = requireModerate;
         this.defaultLimit = tools.logsDefaultLimit();
         this.maxLimit = tools.logsMaxLimit();
         this.maxScanBytes = tools.logsMaxScanBytes();
         this.maxPatternLength = tools.logsMaxPatternLength();
-        Path root = null;
-        try {
-            root = Path.of("").toAbsolutePath().normalize().toRealPath();
-        } catch (IOException ignored) {
-            // No usable server root: every read will be rejected.
-        }
-        this.serverRoot = root;
     }
 
     @Override public String name() { return "edenmcp.logs.read"; }
-    @Override public String description() { return "Read recent server log lines with optional filter/limit (bounded)."; }
+    @Override public String description() {
+        return "Read recent server log lines (plain, .gz or .zip) with optional filter/limit (bounded).";
+    }
     @Override public CapabilityLevel level() { return requireModerate ? CapabilityLevel.MODERATE_ACTION : CapabilityLevel.SAFE_READ; }
     @Override public SideEffects sideEffects() { return SideEffects.NONE; }
     @Override public List<String> tags() { return List.of("logs"); }
@@ -65,6 +59,8 @@ public final class LogsReadTool implements McpTool {
         return Map.of(
                 "type", "object",
                 "properties", Map.of(
+                        "file", Map.of("type", "string", "description",
+                                "File name inside logs/ (default: latest.log); .gz and .zip are decompressed"),
                         "limit", Map.of("type", "integer", "description",
                                 "Max lines to return (default " + defaultLimit + ", max " + maxLimit + ")"),
                         "filter", Map.of("type", "string", "description", "Optional substring or regex filter"),
@@ -75,17 +71,19 @@ public final class LogsReadTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        if (logFile == null || serverRoot == null) return ToolResult.error("Log file not available");
         int limit;
         String filter;
         boolean regex;
+        String fileName;
         try {
+            fileName = ToolArgs.string(context.arguments(), "file");
             limit = ToolArgs.integer(context.arguments(), "limit", defaultLimit, 1, maxLimit);
             filter = ToolArgs.string(context.arguments(), "filter");
             regex = ToolArgs.bool(context.arguments(), "regex");
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());
         }
+        if (fileName == null || fileName.isBlank()) fileName = "latest.log";
         if (filter != null && filter.isBlank()) filter = null;
         if (filter != null && filter.length() > maxPatternLength) return ToolResult.error("Filter is too long");
 
@@ -99,9 +97,11 @@ public final class LogsReadTool implements McpTool {
             }
         }
         try {
-            Tail tail = readTailLines(limit, filter, pattern);
+            Path path = logs.resolve(fileName);
+            Tail tail = readTail(path, fileName, limit, filter, pattern);
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("file", logFile.toString());
+            out.put("file", fileName);
+            out.put("compression", LogFileAccess.compressionOf(fileName).name().toLowerCase());
             out.put("lines", tail.lines());
             out.put("count", tail.lines().size());
             out.put("truncated", tail.truncated());
@@ -111,20 +111,29 @@ public final class LogsReadTool implements McpTool {
         }
     }
 
-    /**
-     * Reads the tail from a single open file handle, so rotation or truncation
-     * between a size check and a read can no longer cause a partial/EOF failure.
-     */
-    private Tail readTailLines(int limit, @Nullable String filter, @Nullable Pattern pattern) throws IOException {
-        if (logFile == null || serverRoot == null) throw new IOException("Log file not available");
-        Path real = logFile.toRealPath();
-        if (!real.startsWith(serverRoot)) throw new IOException("Log file is outside the server directory");
-        if (!Files.isRegularFile(real, LinkOption.NOFOLLOW_LINKS)) {
+    /** Reads the tail from a single open handle for plain files, or bounded full decompression for archives. */
+    private Tail readTail(Path path, String fileName, int limit,
+                          @Nullable String filter, @Nullable Pattern pattern) throws IOException {
+        LogFileAccess.Compression compression = LogFileAccess.compressionOf(fileName);
+        TailBytes data;
+        if (compression == LogFileAccess.Compression.PLAIN) {
+            data = readPlainTail(path);
+        } else {
+            LogFileAccess.Decompressed decoded = logs.readCompressed(path, compression);
+            data = new TailBytes(decoded.bytes(), decoded.truncated());
+        }
+        return processLines(data.bytes(), data.truncated(), limit, filter, pattern);
+    }
+
+    private record TailBytes(byte[] bytes, boolean truncated) {}
+
+    private TailBytes readPlainTail(Path path) throws IOException {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Log file is not a regular file");
         }
-        try (RandomAccessFile raf = new RandomAccessFile(real.toFile(), "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "r")) {
             long length = raf.length();
-            if (length <= 0) return new Tail(List.of(), false);
+            if (length <= 0) return new TailBytes(new byte[0], false);
             long start = Math.max(0, length - maxScanBytes);
             raf.seek(start);
             if (start > 0) {
@@ -144,28 +153,35 @@ public final class LogsReadTool implements McpTool {
                 if (n < 0) break;
                 total += n;
             }
-            if (total == 0) return new Tail(List.of(), start > 0);
-            for (int i = 0; i < total; i++) {
-                if (buf[i] == 0) throw new IOException("Log file contains binary data");
-            }
-            String text = decodeUtf8(buf, total);
-            String[] parts = text.split("\\R", -1);
-            Deque<String> out = new ArrayDeque<>();
-            for (int i = 0; i < parts.length; i++) {
-                String line = parts[i];
-                if (i == parts.length - 1 && line.isEmpty()) continue;
-                if (filter != null && !filter.isBlank()) {
-                    if (pattern != null) {
-                        if (!pattern.matcher(line).find()) continue;
-                    } else if (!line.contains(filter)) {
-                        continue;
-                    }
-                }
-                out.addLast(line);
-                while (out.size() > limit) out.removeFirst();
-            }
-            return new Tail(new ArrayList<>(out), start > 0);
+            byte[] exact = new byte[total];
+            System.arraycopy(buf, 0, exact, 0, total);
+            return new TailBytes(exact, start > 0);
         }
+    }
+
+    private Tail processLines(byte[] bytes, boolean truncated, int limit,
+                              @Nullable String filter, @Nullable Pattern pattern) throws IOException {
+        if (bytes.length == 0) return new Tail(List.of(), truncated);
+        for (byte b : bytes) {
+            if (b == 0) throw new IOException("Log file contains binary data");
+        }
+        String text = decodeUtf8(bytes, bytes.length);
+        String[] parts = text.split("\\R", -1);
+        Deque<String> out = new ArrayDeque<>();
+        for (int i = 0; i < parts.length; i++) {
+            String line = parts[i];
+            if (i == parts.length - 1 && line.isEmpty()) continue;
+            if (filter != null && !filter.isBlank()) {
+                if (pattern != null) {
+                    if (!pattern.matcher(line).find()) continue;
+                } else if (!line.contains(filter)) {
+                    continue;
+                }
+            }
+            out.addLast(line);
+            while (out.size() > limit) out.removeFirst();
+        }
+        return new Tail(new ArrayList<>(out), truncated);
     }
 
     private static String decodeUtf8(byte[] bytes, int length) throws IOException {

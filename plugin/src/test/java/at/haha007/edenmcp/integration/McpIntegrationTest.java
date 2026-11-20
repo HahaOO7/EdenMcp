@@ -150,6 +150,7 @@ public class McpIntegrationTest {
         assertTrue(hasTool(tools, "edenmcp.server.status"));
         assertTrue(hasTool(tools, "edenmcp.plugins.list"));
         assertTrue(hasTool(tools, "edenmcp.players.list"));
+        assertTrue(hasTool(tools, "edenmcp.logs.list"));
         assertTrue(hasTool(tools, "edenmcp.logs.read"));
         assertTrue(hasTool(tools, "edenmcp.file.list"));
         assertTrue(hasTool(tools, "edenmcp.file.read"));
@@ -536,6 +537,17 @@ public class McpIntegrationTest {
         assertTrue(payload.has("count"), payload.toString());
         assertTrue(payload.has("players"), payload.toString());
         assertEquals(0, payload.get("count").getAsInt(), "No players expected in integration test: " + payload);
+    }
+
+    @Test
+    @Order(99)
+    void toolLogsList() throws Exception {
+        JsonObject res = toolCall("edenmcp.logs.list", new JsonObject(), 145);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertTrue(payload.has("files"), payload.toString());
+        assertTrue(payload.has("total"), payload.toString());
+        assertTrue(payload.has("hasMore"), payload.toString());
     }
 
     @Test

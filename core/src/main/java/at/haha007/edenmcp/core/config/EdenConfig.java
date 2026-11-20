@@ -65,10 +65,12 @@ public record EdenConfig(
                              int commandDispatchTimeoutSeconds,
                              int logsDefaultLimit, int logsMaxLimit,
                              int logsMaxScanBytes, int logsMaxPatternLength,
+                             int logsMaxDecompressedBytes,
                              int filesMaxReadBytes, int filesMaxWriteBytes, int filesMaxListEntries,
                              int filesMaxListDepth, int listMaxEntries) {
         public static ToolConfig defaults() {
             return new ToolConfig(250, 5, 10, 100, 500, 1024 * 1024, 200,
+                    16 * 1024 * 1024,
                     4 * 1024 * 1024, 1024 * 1024, 500, 10, 200);
         }
     }
@@ -139,6 +141,8 @@ public record EdenConfig(
         int logsMaxLimit = Math.max(logsDefaultLimit, cfg.getInt("mcp.tools.logs.max-limit", 500));
         int logsMaxScanBytes = Math.max(1024, cfg.getInt("mcp.tools.logs.max-scan-bytes", 1024 * 1024));
         int logsMaxPatternLength = Math.max(1, cfg.getInt("mcp.tools.logs.max-pattern-length", 200));
+        int logsMaxDecompressedBytes = Math.max(logsMaxScanBytes,
+                cfg.getInt("mcp.tools.logs.max-decompressed-bytes", 16 * 1024 * 1024));
         int filesMaxReadBytes = Math.max(1024, cfg.getInt("mcp.tools.files.max-read-bytes", 4 * 1024 * 1024));
         int filesMaxWriteBytes = Math.max(1024, cfg.getInt("mcp.tools.files.max-write-bytes", 1024 * 1024));
         int filesMaxListEntries = Math.max(1, cfg.getInt("mcp.tools.files.max-list-entries", 500));
@@ -146,7 +150,8 @@ public record EdenConfig(
         int listMaxEntries = Math.max(1, cfg.getInt("mcp.tools.list-max-entries", 200));
         ToolConfig tools = new ToolConfig(chatMinIntervalMs, chatSyncTimeoutSeconds,
                 commandDispatchTimeoutSeconds, logsDefaultLimit, logsMaxLimit,
-                logsMaxScanBytes, logsMaxPatternLength, filesMaxReadBytes, filesMaxWriteBytes,
+                logsMaxScanBytes, logsMaxPatternLength, logsMaxDecompressedBytes,
+                filesMaxReadBytes, filesMaxWriteBytes,
                 filesMaxListEntries, filesMaxListDepth, listMaxEntries);
 
         boolean logCalls = cfg.getBoolean("audit.log-tool-calls", true);
