@@ -8,7 +8,7 @@ The project is structured as a small multi-module Gradle build:
 
 - **`core`** – MCP server, transport, capability/mode enforcement, tool registry, hook SPI, and shared domain types. Depends only on the Paper API (and MCP/transport libraries as needed); no plugin bootstrap logic.
 - **`plugin`** – Paper plugin entrypoint (`EdenMcpPlugin`). Assembles the system: loads server-side configuration, wires lifecycle, and registers/boots built-in hooks from `hooks/*` into `core`.
-- **`hooks/<name>`** – One module per integrated plugin/API (currently `hooks/luckperms`). Each hook contributes tools/resources for that specific target and is isolated from other hooks.
+- **`hooks/<name>`** – One module per integrated plugin/API (currently `hooks/luckperms` and `hooks/spark`). Each hook contributes tools/resources for that specific target and is isolated from other hooks.
 
 This separation keeps protocol and policy logic testable in `core` while letting `plugin` own Bukkit/Paper lifecycle concerns and hook assembly.
 
@@ -99,10 +99,11 @@ Suggested mapping:
 - `eden.hooks.list` – server-provided hooks and their availability/enabled state (read-only discovery).
 - `eden.mode.get` – current operating mode.
 - Hook-provided read tools (e.g. LuckPerms lookups) when available.
+- Spark (`SAFE_READ`): `eden.spark.stats.cpu`, `eden.spark.stats.tps`, `eden.spark.stats.mspt`, `eden.spark.stats.gc`, `eden.spark.profiler.info`, and `eden.spark.data.list`/`read`/`inspect` for bounded access to locally saved raw profile/heap files. Raw protobuf inspection is schema-free and done locally; no data is uploaded.
 
 ### Moderate tools
 - `eden.chat.send` – send a message to a player or broadcast; rate-limited and attributable (prefix/logged).
-- Hook-provided moderate actions explicitly marked safe-mutation.
+- Hook-provided moderate actions explicitly marked safe-mutation, including `eden.spark.profiler.control` and `eden.spark.diagnostics.run`. Spark results are always saved locally (`--save-to-file`); uploading is not exposed.
 
 ### Unsafe tools
 - `eden.command.dispatch` – execute a console command (**`UNSAFE_ACTION` by default**, highest risk; strongly audited).
@@ -119,7 +120,7 @@ Suggested mapping:
 
 Resources are read-only observations exposed through the MCP resource methods. `resources/list` returns every registered resource (URI, name, optional description/mimeType, and optional `_meta`); `resources/read` takes a `uri` and returns one `contents` entry with `uri`, `mimeType`, and `text` (JSON values are serialized by the transport). Resources have no capability level above `SAFE_READ` and stay visible in every mode. A resource read is authenticated and session-bound just like a tool call; unknown URIs and reader failures produce JSON-RPC errors and are audited.
 
-Shipped resources: `eden://config/snapshot` (the same redacted configuration/state snapshot as `eden.config.get`) and, when LuckPerms is present, `eden://luckperms/groups` contributed by the hook.
+Shipped resources: `eden://config/snapshot` (the same redacted configuration/state snapshot as `eden.config.get`), `eden://luckperms/groups` when LuckPerms is present, and `eden://spark/stats` when Spark is present (aggregated CPU/TPS/MSPT/GC snapshot).
 
 ## Hook / Plugin Integration SPI
 
@@ -152,6 +153,12 @@ record HookContribution(
 **Availability:** LuckPerms API present.
 
 The hook contributes two read-only (`SAFE_READ`) tools: `eden.luckperms.user.lookup` and `eden.luckperms.groups.list`, plus the `eden://luckperms/groups` resource. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
+
+### Example: Spark (`hooks:spark`)
+
+**Availability:** Paper's bundled `spark` plugin is loaded (`softdepend` ensures it precedes EdenMcp).
+
+Spark's public API is accessed reflectively so no snapshot repository or shaded API copy is required. The hook contributes read-only statistics tools, profiler status, a raw-data toolset (list, chunked base64 read, schema-free protobuf structure inspection), and the `eden://spark/stats` resource. Profiler/diagnostic commands are built from strict allowlists, dispatched on the server thread with a captured reply, and audited; results are saved locally and never uploaded. Raw files are restricted to Spark's own directory, to `.sparkprofile`/`.hprof` extensions, and to simple file names to prevent traversal.
 
 ## Configuration
 
@@ -217,6 +224,8 @@ hooks:
   # Server-provided hook enablement (not client-configurable)
   luckperms:
     enabled: true
+  spark:
+    enabled: true
 
 commands:
   # Command dispatch is UNSAFE_ACTION by default.
@@ -249,7 +258,7 @@ audit:
 
 ## Implementation Status
 
-Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, and the LuckPerms hook. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, secret redaction, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
+Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, and the LuckPerms and Spark hooks. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, secret redaction, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
 
 ## Resolved Decisions
 

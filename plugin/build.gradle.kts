@@ -21,6 +21,7 @@ val paperJarOverride = providers.gradleProperty("integration.paperJar")
 dependencies {
     implementation(project(":core"))
     implementation(project(":hooks:luckperms"))
+    implementation(project(":hooks:spark"))
 
     compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
 
@@ -146,6 +147,8 @@ val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
                   enabled: false
             hooks:
               luckperms:
+                enabled: true
+              spark:
                 enabled: true
             commands:
               classification: []

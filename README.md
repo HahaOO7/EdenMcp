@@ -11,7 +11,7 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 - **Three operating modes** (`safe`, `moderate`, `unsafe`) that gate which tools are advertised and executable; mode can be changed at runtime and is audited
 - **Session handling** — `initialize` issues an `Mcp-Session-Id`; sessions are principal-bound, idle-expiring, and invalidated on key rotation
 - **Auditing with redaction** — tool calls and mode changes are logged, while commands/chat messages and secrets are redacted by default
-- **Server-authoritative hooks** — integrations contribute tools through a small SPI; currently LuckPerms (read-only lookups)
+- **Server-authoritative hooks** — integrations contribute tools through a small SPI; currently LuckPerms (read-only lookups) and Spark (profiling, diagnostics, raw data)
 - **Hardened defaults** — bounded request bodies/batches/SSE clients, Host/Origin validation, no CORS headers unless configured, and secret redaction in `eden.config.get`
 
 ## Requirements
@@ -20,6 +20,7 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 - **Paper 26.3** (the plugin declares `api-version: '26.3'`)
 - Gradle **9.8.2** via the included wrapper (`./gradlew`)
 - Optional: [LuckPerms](https://luckperms.net/) 5.x for the LuckPerms hook (the integration test setup downloads a pinned jar automatically)
+- Optional: Spark — Paper bundles it by default; the Spark hook activates when the `spark` plugin is present
 
 ## Building
 
@@ -69,6 +70,7 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `mcp.tools.logs` | Log-read default/max lines, tail scan bytes, max regex filter length |
 | `audit.max-value-length` | Truncation length for sanitized audit values (default `200`) |
 | `hooks.luckperms.enabled` | Enable the LuckPerms hook |
+| `hooks.spark.enabled` | Enable the Spark profiling hook (Paper ships Spark) |
 | `commands.classification` | Ordered regex rules that reclassify specific console commands |
 | `audit` | Tool-call/mode-change logging and optional verbose logging |
 
@@ -89,8 +91,8 @@ All `mcp` subcommands require the `edenmcp.admin` permission (granted to operato
 
 | Mode | Capabilities |
 | --- | --- |
-| `safe` (default) | Read-only inspection: status, logs, config snapshot, players, plugins, hooks, mode |
-| `moderate` | Everything in `safe`, plus sending/broadcasting chat and the `eden.mode.set` control tool |
+| `safe` (default) | Read-only inspection: status, logs, config snapshot, players, plugins, hooks, mode, Spark statistics/profiler status/raw data |
+| `moderate` | Everything in `safe`, plus chat, `eden.mode.set`, Spark profiler control and diagnostic commands |
 | `unsafe` | Everything above, plus console command dispatch and privileged hook actions |
 
 Tools are filtered by mode before they are advertised, so clients never see tools they cannot execute. Mode changes take effect immediately for subsequent discovery and calls. By default an authenticated client can escalate to `unsafe` via `eden.mode.set`; set `mcp.policy.allow-unsafe-at-runtime: false` to restrict that to the server console.
@@ -107,11 +109,18 @@ Read-only (`safe`):
 - `eden.config.get` — config/state snapshot with secrets redacted
 - `eden.mode.get` — current mode
 - `eden.luckperms.user.lookup`, `eden.luckperms.groups.list` — when LuckPerms is installed
+- `eden.spark.stats.cpu`, `eden.spark.stats.tps`, `eden.spark.stats.mspt`, `eden.spark.stats.gc` — Spark's performance statistics with optional windows
+- `eden.spark.profiler.info` — current Spark profiler status
+- `eden.spark.data.list`, `eden.spark.data.read`, `eden.spark.data.inspect` — bounded access to raw Spark profile/heap files; `inspect` decodes protobuf structure locally
+
+Read-only resource: `eden://spark/stats` returns an aggregated CPU/TPS/MSPT/GC snapshot.
 
 Moderate:
 
 - `eden.chat.send` — send a message to a player or broadcast (throttled via `mcp.tools.chat-min-interval-ms`, attributable)
 - `eden.mode.set` — change the operating mode (audited)
+- `eden.spark.profiler.control` — start/stop/cancel the profiler; **results are always saved locally, never uploaded**
+- `eden.spark.diagnostics.run` — bounded tick/GC monitor toggles, heap dumps (local files), TPS/GC reports
 
 Unsafe:
 
@@ -123,6 +132,7 @@ Unsafe:
 core/                    MCP transport, auth, mode/capability policy, tool registry, hook SPI
 plugin/                  Paper plugin bootstrap, built-in tools, console commands, resources
 hooks/luckperms/         LuckPerms integration module (read-only tools)
+hooks/spark/             Spark profiling hook (statistics, control, diagnostics, raw data)
 docs/DESIGN.md           Architecture, capability model, and design decisions
 docs/DEPLOYMENT.md       Installation, TLS/auth setup, and optional hardening
 ```

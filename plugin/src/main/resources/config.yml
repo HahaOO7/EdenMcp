@@ -62,6 +62,8 @@ mcp:
 hooks:
   luckperms:
     enabled: true
+  spark:
+    enabled: true
 
 commands:
   # Command dispatch is UNSAFE_ACTION and is never advertised in safe/moderate mode.

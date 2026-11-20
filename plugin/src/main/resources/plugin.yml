@@ -4,6 +4,7 @@ version: '${version}'
 main: at.haha007.edenMcp.EdenMcpPlugin
 api-version: '26.3'
 load: POSTWORLD
+softdepend: [ spark ]
 
 authors: [ Haha007 ]
 

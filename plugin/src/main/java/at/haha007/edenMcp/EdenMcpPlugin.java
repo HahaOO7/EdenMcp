@@ -13,6 +13,7 @@ import at.haha007.edenMcp.core.resource.McpResource;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import at.haha007.edenMcp.core.transport.McpHttpServer;
 import at.haha007.edenMcp.hooks.luckperms.LuckPermsHook;
+import at.haha007.edenMcp.hooks.spark.SparkHook;
 import at.haha007.edenMcp.tools.*;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -83,6 +84,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
 
             // Known hooks assembled by plugin (server-authoritative)
             hookManager.registerKnownHook(new LuckPermsHook(), edenConfig.hookEnabled().getOrDefault("luckperms", true));
+            hookManager.registerKnownHook(new SparkHook(), edenConfig.hookEnabled().getOrDefault("spark", true));
 
             // Core tools
             this.commandDispatchTool = new CommandDispatchTool(this, edenConfig.commandClassification(),

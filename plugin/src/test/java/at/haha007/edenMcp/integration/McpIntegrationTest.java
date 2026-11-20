@@ -14,10 +14,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -154,6 +157,16 @@ public class McpIntegrationTest {
         assertTrue(hasTool(tools, "eden.command.dispatch"));
         assertTrue(hasTool(tools, "eden.luckperms.groups.list"), "LuckPerms hook should be available: " + tools);
         assertTrue(hasTool(tools, "eden.luckperms.user.lookup"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.stats.cpu"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.stats.tps"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.stats.mspt"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.stats.gc"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.profiler.control"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.profiler.info"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.diagnostics.run"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.data.list"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.data.read"), "Spark hook should be available: " + tools);
+        assertTrue(hasTool(tools, "eden.spark.data.inspect"), "Spark hook should be available: " + tools);
     }
 
     @Test
@@ -165,6 +178,8 @@ public class McpIntegrationTest {
         assertTrue(hasResource(resources, "eden://config/snapshot"), "core resource missing: " + resources);
         assertTrue(hasResource(resources, "eden://luckperms/groups"),
                 "LuckPerms hook should contribute a resource: " + resources);
+        assertTrue(hasResource(resources, "eden://spark/stats"),
+                "Spark hook should contribute a resource: " + resources);
     }
 
     @Test
@@ -179,6 +194,19 @@ public class McpIntegrationTest {
         JsonObject payload = JsonParser.parseString(content.get("text").getAsString()).getAsJsonObject();
         assertTrue(payload.get("groups").isJsonArray(), payload.toString());
         assertEquals(payload.getAsJsonArray("groups").size(), payload.get("count").getAsInt());
+    }
+
+    @Test
+    @Order(9)
+    void resourcesReadSparkStats() throws Exception {
+        JsonObject params = new JsonObject();
+        params.addProperty("uri", "eden://spark/stats");
+        JsonObject result = rpc("resources/read", params, 222).getAsJsonObject("result");
+        JsonObject content = result.getAsJsonArray("contents").get(0).getAsJsonObject();
+        assertEquals("application/json", content.get("mimeType").getAsString());
+        JsonObject payload = JsonParser.parseString(content.get("text").getAsString()).getAsJsonObject();
+        assertEquals("spark", payload.get("source").getAsString(), payload.toString());
+        assertTrue(payload.has("tps"), payload.toString());
     }
 
     @Test
@@ -292,6 +320,10 @@ public class McpIntegrationTest {
         assertFalse(hasTool(safeTools, "eden.command.dispatch"), "dispatch must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "eden.mode.set"), "mode.set must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "eden.chat.send"), "chat.send must be hidden in safe mode");
+        assertFalse(hasTool(safeTools, "eden.spark.profiler.control"),
+                "Spark profiler control must be hidden in safe mode");
+        assertTrue(hasTool(safeTools, "eden.spark.stats.cpu"),
+                "Spark read-only stats must remain visible in safe mode");
 
         JsonObject denied = toolCall("eden.command.dispatch", jsonObj("command", "say hello"), 114);
         assertTrue(denied.get("isError").getAsBoolean(), "Expected denial in safe mode: " + denied);
@@ -310,6 +342,148 @@ public class McpIntegrationTest {
         assertTrue(payload.has("bukkitVersion"), payload.toString());
         assertTrue(payload.has("onlinePlayers"), payload.toString());
         assertTrue(payload.has("worlds"), payload.toString());
+    }
+
+    @Test
+    @Order(22)
+    void toolSparkStats() throws Exception {
+        int id = 600;
+        for (String name : List.of("eden.spark.stats.cpu", "eden.spark.stats.tps",
+                "eden.spark.stats.mspt", "eden.spark.stats.gc")) {
+            JsonObject result = toolCall(name, new JsonObject(), id++);
+            assertFalse(result.get("isError").getAsBoolean(), name + ": " + result);
+            JsonObject payload = payloadJson(result);
+            assertFalse(payload.has("error"), name + ": " + payload);
+        }
+
+        JsonObject windowed = toolCall("eden.spark.stats.tps", jsonObj("window", "1m"), id);
+        assertFalse(windowed.get("isError").getAsBoolean(), windowed.toString());
+        JsonObject windows = payloadJson(windowed).getAsJsonObject("windows");
+        assertTrue(windows.has("MINUTES_1"), windows.toString());
+        assertEquals(1, windows.size(), windows.toString());
+    }
+
+    @Test
+    @Order(23)
+    void toolSparkDataListAndBounds() throws Exception {
+        JsonObject listArgs = new JsonObject();
+        listArgs.addProperty("kind", "all");
+        listArgs.addProperty("limit", 10);
+        JsonObject result = toolCall("eden.spark.data.list", listArgs, 610);
+        assertFalse(result.get("isError").getAsBoolean(), result.toString());
+        JsonObject payload = payloadJson(result);
+        assertTrue(payload.get("files").isJsonArray(), payload.toString());
+
+        JsonObject traversal = toolCall("eden.spark.data.read", jsonObj("file", "../config.yml"), 611);
+        assertTrue(traversal.get("isError").getAsBoolean(), traversal.toString());
+    }
+
+    @Test
+    @Order(24)
+    void toolSparkProfilerInfo() throws Exception {
+        JsonObject result = toolCall("eden.spark.profiler.info", new JsonObject(), 620);
+        assertFalse(result.get("isError").getAsBoolean(), result.toString());
+        JsonObject payload = payloadJson(result);
+        assertTrue(payload.has("command"), payload.toString());
+        assertTrue(payload.has("output"), payload.toString());
+    }
+
+    @Test
+    @Order(25)
+    void toolSparkProfilerControlLifecycle() throws Exception {
+        // Spark's test config runs a background profiler; discard it before measuring new files.
+        JsonObject cancel = toolCall("eden.spark.profiler.control", jsonObj("action", "cancel"), 621);
+        assertFalse(cancel.get("isError").getAsBoolean(), cancel.toString());
+        JsonObject cancelPayload = payloadJson(cancel);
+        assertEquals("spark profiler cancel", cancelPayload.get("command").getAsString(), cancelPayload.toString());
+        assertEquals("local-only", cancelPayload.get("storage").getAsString(), cancelPayload.toString());
+
+        Set<String> before = profileNames(622);
+
+        JsonObject startArgs = new JsonObject();
+        startArgs.addProperty("action", "start");
+        startArgs.addProperty("timeoutSeconds", 60);
+        startArgs.addProperty("comment", "MCP integration profile");
+        JsonObject start = toolCall("eden.spark.profiler.control", startArgs, 623);
+        assertFalse(start.get("isError").getAsBoolean(), start.toString());
+        JsonObject startPayload = payloadJson(start);
+        assertEquals("spark profiler start --timeout 60 --comment \"MCP integration profile\" --save-to-file",
+                startPayload.get("command").getAsString(), startPayload.toString());
+        assertEquals("local-only", startPayload.get("storage").getAsString(), startPayload.toString());
+
+        JsonObject info = toolCall("eden.spark.profiler.info", new JsonObject(), 624);
+        assertFalse(info.get("isError").getAsBoolean(), info.toString());
+        assertTrue(payloadJson(info).get("output").isJsonArray(), info.toString());
+
+        JsonObject stopArgs = new JsonObject();
+        stopArgs.addProperty("action", "stop");
+        stopArgs.addProperty("comment", "MCP integration profile");
+        JsonObject stop = toolCall("eden.spark.profiler.control", stopArgs, 625);
+        assertFalse(stop.get("isError").getAsBoolean(), stop.toString());
+        JsonObject stopPayload = payloadJson(stop);
+        assertEquals("spark profiler stop --save-to-file --comment \"MCP integration profile\"",
+                stopPayload.get("command").getAsString(), stopPayload.toString());
+
+        String profile = waitForNewProfile(before);
+        assertNotNull(profile, "Expected a locally saved Spark profile");
+
+        JsonObject readArgs = new JsonObject();
+        readArgs.addProperty("file", profile);
+        readArgs.addProperty("length", 4096);
+        JsonObject read = toolCall("eden.spark.data.read", readArgs, 627);
+        assertFalse(read.get("isError").getAsBoolean(), read.toString());
+        JsonObject readPayload = payloadJson(read);
+        assertTrue(readPayload.get("size").getAsLong() > 0, readPayload.toString());
+        assertTrue(readPayload.get("returned").getAsInt() > 0, readPayload.toString());
+        assertEquals("base64", readPayload.get("encoding").getAsString(), readPayload.toString());
+        String data = readPayload.get("data").getAsString();
+        assertFalse(data.isBlank(), readPayload.toString());
+        assertEquals(readPayload.get("returned").getAsInt(), Base64.getDecoder().decode(data).length);
+
+        JsonObject inspectArgs = new JsonObject();
+        inspectArgs.addProperty("file", profile);
+        inspectArgs.addProperty("maxDepth", 4);
+        inspectArgs.addProperty("maxNodes", 1000);
+        inspectArgs.addProperty("maxBytes", 65536);
+        JsonObject inspect = toolCall("eden.spark.data.inspect", inspectArgs, 628);
+        assertFalse(inspect.get("isError").getAsBoolean(), inspect.toString());
+        JsonObject inspectPayload = payloadJson(inspect);
+        assertTrue(inspectPayload.has("summary"), inspectPayload.toString());
+        assertTrue(inspectPayload.has("tree"), inspectPayload.toString());
+        assertTrue(inspectPayload.has("truncated"), inspectPayload.toString());
+    }
+
+    @Test
+    @Order(26)
+    void toolSparkProfilerControlRejectsUnsafeArguments() throws Exception {
+        JsonObject missingAction = toolCall("eden.spark.profiler.control", new JsonObject(), 630);
+        assertTrue(missingAction.get("isError").getAsBoolean(), missingAction.toString());
+
+        JsonObject badMode = toolCall("eden.spark.profiler.control",
+                args("action", "start", "mode", "upload"), 631);
+        assertTrue(badMode.get("isError").getAsBoolean(), badMode.toString());
+
+        JsonObject badTimeout = toolCall("eden.spark.profiler.control",
+                args("action", "start", "timeoutSeconds", 10), 632);
+        assertTrue(badTimeout.get("isError").getAsBoolean(), badTimeout.toString());
+
+        JsonObject badComment = toolCall("eden.spark.profiler.control",
+                args("action", "start", "comment", "$(id)"), 633);
+        assertTrue(badComment.get("isError").getAsBoolean(), badComment.toString());
+
+        JsonObject badDiagnostic = toolCall("eden.spark.diagnostics.run",
+                jsonObj("command", "upload"), 634);
+        assertTrue(badDiagnostic.get("isError").getAsBoolean(), badDiagnostic.toString());
+    }
+
+    @Test
+    @Order(27)
+    void toolSparkDiagnosticsRun() throws Exception {
+        JsonObject result = toolCall("eden.spark.diagnostics.run", jsonObj("command", "tps"), 640);
+        assertFalse(result.get("isError").getAsBoolean(), result.toString());
+        JsonObject payload = payloadJson(result);
+        assertEquals("spark tps", payload.get("command").getAsString(), payload.toString());
+        assertTrue(payload.get("output").isJsonArray(), payload.toString());
     }
 
     @Test
@@ -602,6 +776,42 @@ public class McpIntegrationTest {
         JsonObject o = new JsonObject();
         o.addProperty(k, v);
         return o;
+    }
+
+    /** Builds a JSON object from alternating string keys and primitive values. */
+    private static JsonObject args(Object... keyValues) {
+        JsonObject o = new JsonObject();
+        for (int i = 0; i < keyValues.length; i += 2) {
+            String key = (String) keyValues[i];
+            Object value = keyValues[i + 1];
+            if (value instanceof Boolean b) o.addProperty(key, b);
+            else if (value instanceof Number n) o.addProperty(key, n);
+            else o.addProperty(key, String.valueOf(value));
+        }
+        return o;
+    }
+
+    private Set<String> profileNames(int id) throws Exception {
+        Set<String> names = new HashSet<>();
+        JsonObject result = toolCall("eden.spark.data.list", args("kind", "profile", "limit", 200), id);
+        assertFalse(result.get("isError").getAsBoolean(), result.toString());
+        for (JsonElement e : payloadJson(result).getAsJsonArray("files")) {
+            names.add(e.getAsJsonObject().get("name").getAsString());
+        }
+        return names;
+    }
+
+    private String waitForNewProfile(Set<String> before) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        int id = 626;
+        while (System.nanoTime() < deadline) {
+            Set<String> current = profileNames(id++);
+            current.removeAll(before);
+            if (!current.isEmpty()) return current.iterator().next();
+            Thread.sleep(500);
+        }
+        fail("No new Spark profile was saved locally");
+        return null;
     }
 
     private static void waitForLocalPort(int port, Duration timeout) throws Exception {
