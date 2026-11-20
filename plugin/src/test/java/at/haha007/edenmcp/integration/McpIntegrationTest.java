@@ -159,6 +159,12 @@ public class McpIntegrationTest {
         assertTrue(hasTool(tools, "edenmcp.command.dispatch"));
         assertTrue(hasTool(tools, "edenmcp.luckperms.groups.list"), "LuckPerms hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.luckperms.user.lookup"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.permission.check"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.group.get"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.tracks.list"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.track.get"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.groups"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.audit.read"), "LuckPerms hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.cpu"), "Spark hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.tps"), "Spark hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.mspt"), "Spark hook should be available: " + tools);
@@ -574,6 +580,78 @@ public class McpIntegrationTest {
         assertNotNull(res, "Missing tool result");
         assertTrue(res.has("isError"), res.toString());
         assertTrue(res.has("content"), res.toString());
+    }
+
+    @Test
+    @Order(28)
+    void toolLuckPermsGroupGet() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.group.get", args("name", "default", "limit", 25), 181);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertEquals("default", payload.get("name").getAsString(), payload.toString());
+        assertTrue(payload.get("nodes").isJsonArray(), payload.toString());
+        assertTrue(payload.get("inheritedGroups").isJsonArray(), payload.toString());
+        assertTrue(payload.get("nodeCount").getAsInt() >= payload.getAsJsonArray("nodes").size(), payload.toString());
+    }
+
+    @Test
+    @Order(29)
+    void toolLuckPermsTracksList() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.tracks.list", new JsonObject(), 182);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertTrue(payload.get("tracks").isJsonArray(), payload.toString());
+        assertEquals(payload.getAsJsonArray("tracks").size(), payload.get("count").getAsInt(), payload.toString());
+    }
+
+    @Test
+    @Order(30)
+    void toolLuckPermsTrackGetMissingTrack() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.track.get", jsonObj("name", "missing-track-it"), 183);
+        assertTrue(res.get("isError").getAsBoolean(), res.toString());
+        assertEquals("Track not found", payloadJson(res).get("error").getAsString(), res.toString());
+    }
+
+    @Test
+    @Order(31)
+    void toolLuckPermsUserPermissionCheck() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.permission.check",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "permission", "edenmcp.it.check"), 184);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertEquals("edenmcp.it.check", payload.get("permission").getAsString(), payload.toString());
+        assertTrue(Set.of("TRUE", "FALSE", "UNDEFINED").contains(payload.get("value").getAsString()), payload.toString());
+        assertTrue(payload.get("contexts").isJsonObject(), payload.toString());
+    }
+
+    @Test
+    @Order(32)
+    void toolLuckPermsUserGroups() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.groups",
+                jsonObj("uuid", "00000000-0000-0000-0000-000000000000"), 185);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertTrue(payload.get("groups").isJsonArray(), payload.toString());
+        assertTrue(payload.get("directGroups").isJsonArray(), payload.toString());
+        assertEquals(payload.getAsJsonArray("groups").size(), payload.get("count").getAsInt(), payload.toString());
+    }
+
+    @Test
+    @Order(33)
+    void toolLuckPermsAuditRead() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.audit.read", args("limit", 10), 186);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertTrue(payload.get("actions").isJsonArray(), payload.toString());
+        assertTrue(payload.getAsJsonArray("actions").size() <= 10, payload.toString());
+        assertEquals(payload.getAsJsonArray("actions").size(), payload.get("count").getAsInt(), payload.toString());
+        for (JsonElement e : payload.getAsJsonArray("actions")) {
+            JsonObject entry = e.getAsJsonObject();
+            assertTrue(entry.has("timestamp"), entry.toString());
+            assertTrue(entry.has("source"), entry.toString());
+            assertTrue(entry.has("target"), entry.toString());
+            assertTrue(entry.has("description"), entry.toString());
+        }
     }
 
     @Test

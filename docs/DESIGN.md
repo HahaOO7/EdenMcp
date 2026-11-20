@@ -99,7 +99,7 @@ Suggested mapping:
 - `edenmcp.plugins.list` – installed plugins and enabled state.
 - `edenmcp.hooks.list` – server-provided hooks and their availability/enabled state (read-only discovery).
 - `edenmcp.mode.get` – current operating mode.
-- Hook-provided read tools (e.g. LuckPerms lookups) when available.
+- Hook-provided read tools (e.g. LuckPerms user, permission, group, track and audit lookups) when available.
 - Spark (`SAFE_READ`): `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc`, `edenmcp.spark.profiler.info`, and `edenmcp.spark.data.list`/`read`/`inspect` for bounded access to locally saved raw profile/heap files. Raw protobuf inspection is schema-free and done locally; no data is uploaded.
 
 ### Moderate tools
@@ -160,7 +160,7 @@ record HookContribution(List<McpTool> tools, List<McpResource> resources) {}
 
 **Availability:** LuckPerms API present.
 
-The hook contributes two read-only (`SAFE_READ`) tools: `edenmcp.luckperms.user.lookup` and `edenmcp.luckperms.groups.list`, plus the `edenmcp://luckperms/groups` resource. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
+The hook contributes read-only (`SAFE_READ`) tools: `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.user.permission.check`, `edenmcp.luckperms.user.groups`, `edenmcp.luckperms.groups.list`, `edenmcp.luckperms.group.get`, `edenmcp.luckperms.tracks.list`, `edenmcp.luckperms.track.get` and `edenmcp.luckperms.audit.read`, plus the `edenmcp://luckperms/groups` resource. Results are bounded (node/audit limits). Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
 
 ### Example: Spark (`hooks:spark`)
 

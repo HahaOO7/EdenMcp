@@ -108,7 +108,7 @@ Read-only (`safe`):
 - `edenmcp.logs.read` — bounded recent log lines with optional filter
 - `edenmcp.config.get` — config/state snapshot with secrets redacted
 - `edenmcp.mode.get` — current mode
-- `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.groups.list` — when LuckPerms is installed
+- `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.user.permission.check`, `edenmcp.luckperms.user.groups`, `edenmcp.luckperms.groups.list`, `edenmcp.luckperms.group.get`, `edenmcp.luckperms.tracks.list`, `edenmcp.luckperms.track.get`, `edenmcp.luckperms.audit.read` — when LuckPerms is installed
 - `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc` — Spark's performance statistics with optional windows
 - `edenmcp.spark.profiler.info` — current Spark profiler status
 - `edenmcp.spark.data.list`, `edenmcp.spark.data.read`, `edenmcp.spark.data.inspect` — bounded access to raw Spark profile/heap files; `inspect` decodes protobuf structure locally
