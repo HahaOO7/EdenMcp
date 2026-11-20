@@ -26,6 +26,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 
 /** Shared helpers for the LuckPerms tools. */
@@ -33,6 +37,7 @@ final class LpSupport {
     static final int MAX_NODES = 200;
     static final int MAX_AUDIT = 200;
     static final int MAX_LIST = 200;
+    static final int LUCKPERMS_TIMEOUT_SECONDS = 10;
 
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final UUID AUDIT_SOURCE = UUID.nameUUIDFromBytes("EdenMcp".getBytes(StandardCharsets.UTF_8));
@@ -48,6 +53,30 @@ final class LpSupport {
     static final class InvalidArgument extends Exception {
         InvalidArgument(String message) {
             super(message);
+        }
+    }
+
+    /** A LuckPerms future did not complete within the bounded wait. Details stay server-side. */
+    static final class LuckPermsTimeoutException extends RuntimeException {
+        LuckPermsTimeoutException(String operation, Throwable cause) {
+            super("LuckPerms operation timed out: " + operation, cause);
+        }
+    }
+
+    /** Waits for a LuckPerms future with a fixed bound so a slow backend cannot block a worker. */
+    static <T> T await(CompletableFuture<T> future, String operation) {
+        return await(future, operation, LUCKPERMS_TIMEOUT_SECONDS);
+    }
+
+    /** Same bounded wait with an explicit timeout, primarily for fast tests. */
+    static <T> T await(CompletableFuture<T> future, String operation, long timeoutSeconds) {
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LuckPermsTimeoutException(operation, e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new LuckPermsTimeoutException(operation, e);
         }
     }
 
@@ -150,12 +179,12 @@ final class LpSupport {
             }
         }
         if (uuid == null && username != null && !username.isEmpty()) {
-            uuid = api.getUserManager().lookupUniqueId(username).join();
+            uuid = await(api.getUserManager().lookupUniqueId(username), "lookupUniqueId");
         }
         if (uuid == null) {
             throw new InvalidArgument("Provide username or uuid");
         }
-        User user = api.getUserManager().loadUser(uuid).join();
+        User user = await(api.getUserManager().loadUser(uuid), "loadUser");
         if (user == null) {
             throw new InvalidArgument("User not found");
         }
@@ -163,20 +192,20 @@ final class LpSupport {
     }
 
     static Group requireGroup(LuckPerms api, String name) throws InvalidArgument {
-        return api.getGroupManager().loadGroup(name).join()
+        return await(api.getGroupManager().loadGroup(name), "loadGroup")
                 .orElseThrow(() -> new InvalidArgument("Group not found"));
     }
 
     static Track requireTrack(LuckPerms api, String name) throws InvalidArgument {
-        return api.getTrackManager().loadTrack(name).join()
+        return await(api.getTrackManager().loadTrack(name), "loadTrack")
                 .orElseThrow(() -> new InvalidArgument("Track not found"));
     }
 
     static void saveHolder(LuckPerms api, PermissionHolder holder) {
         if (holder instanceof User user) {
-            api.getUserManager().saveUser(user).join();
+            await(api.getUserManager().saveUser(user), "saveUser");
         } else {
-            api.getGroupManager().saveGroup((Group) holder).join();
+            await(api.getGroupManager().saveGroup((Group) holder), "saveGroup");
         }
     }
 
@@ -385,6 +414,6 @@ final class LpSupport {
                 .targetName(targetName)
                 .description("[" + callerId + "] " + description)
                 .build();
-        api.getActionLogger().submit(action).join();
+        await(api.getActionLogger().submit(action), "submitAction");
     }
 }

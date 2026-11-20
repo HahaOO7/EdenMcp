@@ -1,6 +1,7 @@
 package at.haha007.edenmcp.hooks.spark;
 
 import at.haha007.edenmcp.api.CapabilityLevel;
+import at.haha007.edenmcp.api.OperatingMode;
 import at.haha007.edenmcp.api.SideEffects;
 import at.haha007.edenmcp.api.McpTool;
 import at.haha007.edenmcp.api.ToolContext;
@@ -11,18 +12,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Runs a bounded set of Spark monitoring/diagnostic commands. */
 final class SparkDiagnosticsTool implements McpTool {
     private static final Set<String> COMMANDS = Set.of("tickmonitor", "gcmonitor", "heapdump", "tps", "gc");
     private static final Set<String> COMPRESSIONS = Set.of("gzip", "xz", "lzma");
+    private static final long HEAPDUMP_MIN_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60);
+    private static final long NO_HEAPDUMP = Long.MIN_VALUE;
 
-    private final SparkCommandRunner runner;
+    /** Test seam: the production runner talks to Bukkit, which is unavailable in unit tests. */
+    @FunctionalInterface
+    interface Runner {
+        SparkCommandRunner.Result run(String command, String action, ToolContext context) throws Exception;
+    }
+
+    private final Runner runner;
     @Nullable private final SparkDataStore store;
+    private final AtomicLong lastHeapDumpNanos = new AtomicLong(NO_HEAPDUMP);
 
     SparkDiagnosticsTool(SparkCommandRunner runner, @Nullable SparkDataStore store) {
-        this.runner = runner;
+        this.runner = runner::run;
         this.store = store;
+    }
+
+    SparkDiagnosticsTool(Runner runner) {
+        this.runner = runner;
+        this.store = null;
     }
 
     @Override
@@ -32,7 +49,8 @@ final class SparkDiagnosticsTool implements McpTool {
 
     @Override
     public String description() {
-        return "Run a bounded Spark diagnostic: tick/gc monitor toggles, heap dump (local file), TPS or GC report. "
+        return "Run a bounded Spark diagnostic: tick/gc monitor toggles, heap dump (requires UNSAFE mode; writes a "
+                + "potentially large file to local disk), TPS or GC report. "
                 + "tickmonitor without thresholds toggles the monitor; thresholds start it.";
     }
 
@@ -78,10 +96,25 @@ final class SparkDiagnosticsTool implements McpTool {
             String command = SparkArgs.enumeration(args, "command", null, COMMANDS);
             if (command == null) return ToolResult.error("Missing 'command'");
 
+            if ("heapdump".equals(command)) {
+                if (context.activeMode() != OperatingMode.UNSAFE) {
+                    return ToolResult.error("heapdump requires UNSAFE mode");
+                }
+                if (!reserveHeapDump()) {
+                    return ToolResult.error("heapdump rate limited; try again later");
+                }
+            }
+
             String sparkCommand = buildCommand(command, args);
             SparkCommandRunner.Result result = runner.run(sparkCommand, "diagnostics." + command, context);
             Map<String, Object> out = new LinkedHashMap<>(result.toMap());
-            if ("heapdump".equals(command)) out.put("recentHeapDumps", recentHeapDumps());
+            if ("heapdump".equals(command)) {
+                out.put("recentHeapDumps", recentHeapDumps());
+                out.put("sideEffects", "DANGEROUS");
+                out.put("requiresMode", "UNSAFE");
+                out.put("storage", "Heap dump is written to a local file on disk and can be large "
+                        + "(potentially several GB).");
+            }
             return ToolResult.ok(out);
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());
@@ -112,6 +145,15 @@ final class SparkDiagnosticsTool implements McpTool {
             default -> throw new IllegalArgumentException("Unsupported diagnostic command");
         }
         return spark.toString();
+    }
+
+    private boolean reserveHeapDump() {
+        while (true) {
+            long previous = lastHeapDumpNanos.get();
+            long now = System.nanoTime();
+            if (previous != NO_HEAPDUMP && now - previous < HEAPDUMP_MIN_INTERVAL_NANOS) return false;
+            if (lastHeapDumpNanos.compareAndSet(previous, now)) return true;
+        }
     }
 
     private List<Map<String, Object>> recentHeapDumps() {

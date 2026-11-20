@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -68,5 +69,36 @@ class LpSupportTest {
         assertEquals(List.of(1, 2), LpSupport.limited(List.of(1, 2, 3), 2));
         assertTrue(LpSupport.hasMore(List.of(1, 2, 3), 2));
         assertFalse(LpSupport.hasMore(List.of(1, 2), 2));
+    }
+
+    @Test
+    void awaitReturnsCompletedValue() {
+        assertEquals("done", LpSupport.await(CompletableFuture.completedFuture("done"), "completed", 1));
+    }
+
+    @Test
+    void awaitTimesOutInsteadOfBlockingForever() {
+        assertThrows(LpSupport.LuckPermsTimeoutException.class,
+                () -> LpSupport.await(new CompletableFuture<>(), "neverCompletes", 1));
+    }
+
+    @Test
+    void awaitWrapsFailedFuture() {
+        assertThrows(LpSupport.LuckPermsTimeoutException.class,
+                () -> LpSupport.await(CompletableFuture.failedFuture(new IllegalStateException("backend down")),
+                        "failedFuture", 1));
+    }
+
+    @Test
+    void awaitRestoresInterruptFlag() {
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(LpSupport.LuckPermsTimeoutException.class,
+                    () -> LpSupport.await(new CompletableFuture<>(), "interrupted", 1));
+            assertTrue(Thread.interrupted(), "interrupt flag should be restored");
+        } finally {
+            // The assertion above consumes the flag; assert that nothing remains set.
+            assertFalse(Thread.interrupted(), "interrupt flag should be cleared after the assertion");
+        }
     }
 }

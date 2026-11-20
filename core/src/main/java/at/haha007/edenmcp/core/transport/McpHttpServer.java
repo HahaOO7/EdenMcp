@@ -8,6 +8,7 @@ import at.haha007.edenmcp.core.hook.HookManager;
 import at.haha007.edenmcp.api.OperatingMode;
 import at.haha007.edenmcp.core.policy.SecurityPolicy;
 import at.haha007.edenmcp.api.McpResource;
+import at.haha007.edenmcp.api.ResourceContents;
 import at.haha007.edenmcp.api.ResourceContext;
 import at.haha007.edenmcp.core.resource.ResourceRegistry;
 import at.haha007.edenmcp.api.McpTool;
@@ -64,6 +65,8 @@ public final class McpHttpServer {
     private volatile int port;
     private final Set<SseClient> sseClients = ConcurrentHashMap.newKeySet();
     private final ThreadPoolExecutor executor;
+    /** Tool/resource work runs here, never on the bounded HTTP worker pool. */
+    private final ExecutorService callExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     @SuppressWarnings("unused")
     public McpHttpServer(EdenConfig config,
@@ -177,6 +180,7 @@ public final class McpHttpServer {
         sessions.clear();
         if (server != null) server.stop(config.transport().shutdownGraceSeconds());
         executor.shutdownNow();
+        callExecutor.shutdownNow();
     }
 
     @SuppressWarnings("BusyWait") // SSE keepalive cadence is configured; mcp.transport.sse-keepalive-ms floors it at 1s.
@@ -270,7 +274,8 @@ public final class McpHttpServer {
                 JsonObject resp = handleRpc(el.isJsonObject() ? el.getAsJsonObject() : new JsonObject(), ex, principal);
                 if (resp != null) out.add(resp);
             }
-            sendJson(ex, 200, out);
+            // The whole batch is one HTTP response, so cap the aggregate as well.
+            sendJson(ex, 200, capArray(out, config.transport().maxResponseChars(), true));
         } else if (rootEl.isJsonObject()) {
             JsonObject resp = handleRpc(rootEl.getAsJsonObject(), ex, principal);
             if (resp == null) {
@@ -303,7 +308,7 @@ public final class McpHttpServer {
             return switch (rpcMethod) {
                 case "initialize" -> rpcResult(id, handleInitialize(params, ex, principal));
                 case "notifications/initialized", "initialized" -> null;
-                case "ping" -> rpcResult(id, Map.of());
+                case "ping" -> rpcResult(id, new JsonObject());
                 case "tools/list" -> rpcResult(id, handleToolsList());
                 case "tools/call" -> rpcResult(id, handleToolsCall(params, caller(ex, principal)));
                 case "resources/list" -> rpcResult(id, handleResourcesList());
@@ -316,40 +321,47 @@ public final class McpHttpServer {
         }
     }
 
-    private Map<String, Object> handleInitialize(JsonObject params, HttpExchange ex, Principal principal) {
+    private JsonObject handleInitialize(JsonObject params, HttpExchange ex, Principal principal) {
         String requested = optString(params, "protocolVersion");
         String version = requested != null && SUPPORTED_VERSIONS.contains(requested) ? requested : PROTOCOL_VERSION;
         McpSession session = newSession(principal);
         ex.getResponseHeaders().set("Mcp-Session-Id", session.id());
 
-        Map<String, Object> caps = new LinkedHashMap<>();
-        caps.put("tools", Map.of("listChanged", true));
-        caps.put("resources", Map.of("listChanged", false));
-        Map<String, Object> info = new LinkedHashMap<>();
-        info.put("name", "EdenMcp");
-        info.put("version", "1.0");
-        Map<String, Object> res = new LinkedHashMap<>();
-        res.put("protocolVersion", version);
-        res.put("capabilities", caps);
-        res.put("serverInfo", info);
-        res.put("mode", mode.get().name().toLowerCase(Locale.ROOT));
-        res.put("sessionId", session.id());
+        JsonObject toolCaps = new JsonObject();
+        toolCaps.addProperty("listChanged", true);
+        JsonObject resourceCaps = new JsonObject();
+        resourceCaps.addProperty("listChanged", false);
+        JsonObject caps = new JsonObject();
+        caps.add("tools", toolCaps);
+        caps.add("resources", resourceCaps);
+        JsonObject info = new JsonObject();
+        info.addProperty("name", "EdenMcp");
+        info.addProperty("version", "1.0");
+        JsonObject res = new JsonObject();
+        res.addProperty("protocolVersion", version);
+        res.add("capabilities", caps);
+        res.add("serverInfo", info);
+        res.addProperty("mode", mode.get().name().toLowerCase(Locale.ROOT));
+        res.addProperty("sessionId", session.id());
         return res;
     }
 
-    private Map<String, Object> handleToolsList() {
-        List<Map<String, Object>> tools = new ArrayList<>();
+    private JsonObject handleToolsList() {
+        JsonArray tools = new JsonArray();
         for (McpTool t : registry.visible(mode.get())) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("name", t.name());
-            m.put("description", t.description() + " [level=" + t.level() + ", sideEffects=" + t.sideEffects() + "]");
-            m.put("inputSchema", t.inputSchema() == null ? Map.of("type", "object", "properties", Map.of()) : t.inputSchema());
+            JsonObject m = new JsonObject();
+            m.addProperty("name", t.name());
+            m.addProperty("description", t.description() + " [level=" + t.level() + ", sideEffects=" + t.sideEffects() + "]");
+            m.add("inputSchema", GSON.toJsonTree(t.inputSchema() == null
+                    ? Map.of("type", "object", "properties", Map.of()) : t.inputSchema()));
             tools.add(m);
         }
-        return Map.of("tools", tools);
+        JsonObject res = new JsonObject();
+        res.add("tools", capArray(tools, payloadBudget(), false));
+        return res;
     }
 
-    private Map<String, Object> handleToolsCall(JsonObject params, String caller) {
+    private JsonObject handleToolsCall(JsonObject params, String caller) {
         String name = optString(params, "name");
         JsonObject argsObj = params.has("arguments") && params.get("arguments").isJsonObject() ? params.getAsJsonObject("arguments") : new JsonObject();
         Map<String, Object> args = jsonObjectToMap(argsObj);
@@ -365,12 +377,18 @@ public final class McpHttpServer {
             audit.toolCall(caller, name, active.name(), false, "denied_mode");
             return toolCallResponse(false, "Tool not permitted in mode " + active.name());
         }
+        int timeoutSeconds = config.transport().callTimeoutSeconds();
         try {
-            ToolResult result = tool.execute(new ToolContext(active, caller, args));
+            // The tool runs on a dedicated virtual thread; the HTTP worker only waits.
+            ToolResult result = callWithTimeout(() -> tool.execute(new ToolContext(active, caller, args)));
             audit.toolCall(caller, name, active.name(), result.success(), result.success() ? "ok" : "tool_error");
             Object payload = result.success() ? result.content()
                     : Map.of("error", Objects.requireNonNull(result.error(), "Tool error message"));
             return toolCallResponse(result.success(), payload == null ? Map.of() : payload);
+        } catch (TimeoutException e) {
+            logger.warning("Tool execution timed out after " + timeoutSeconds + "s: " + name);
+            audit.toolCall(caller, name, active.name(), false, "timeout");
+            return toolCallResponse(false, "Tool execution timed out after " + timeoutSeconds + "s: " + name);
         } catch (Exception e) {
             logger.log(Level.WARNING, "Tool execution failed: " + name, e);
             audit.toolCall(caller, name, active.name(), false, "exception:" + e.getClass().getSimpleName());
@@ -378,29 +396,50 @@ public final class McpHttpServer {
         }
     }
 
-    private Map<String, Object> toolCallResponse(boolean ok, Object payload) {
-        String text = payload instanceof String s ? s : GSON.toJson(payload);
-        Map<String, Object> content = new LinkedHashMap<>();
-        content.put("type", "text");
-        content.put("text", text);
-        Map<String, Object> res = new LinkedHashMap<>();
-        res.put("content", List.of(content));
-        res.put("isError", !ok);
+    /**
+     * Builds the MCP {@code content[].text} payload directly in the response tree. A normal payload
+     * is serialized once here and once by {@link #sendJson}; only oversized structured payloads pay
+     * for an extra parse/cap pass. The old path serialized here, converted to a tree in
+     * {@code rpcResult}, and serialized the whole response again.
+     */
+    private JsonObject toolCallResponse(boolean ok, Object payload) {
+        int budget = payloadBudget();
+        String text;
+        if (payload instanceof String s) {
+            text = truncateString(s, budget);
+        } else {
+            text = GSON.toJson(payload);
+            if (text.length() > budget) {
+                JsonElement capped = capPayload(JsonParser.parseString(text), budget);
+                text = capped.isJsonPrimitive() && capped.getAsJsonPrimitive().isString()
+                        ? capped.getAsString() : GSON.toJson(capped);
+            }
+        }
+        JsonObject content = new JsonObject();
+        content.addProperty("type", "text");
+        content.addProperty("text", text);
+        JsonArray contents = new JsonArray();
+        contents.add(content);
+        JsonObject res = new JsonObject();
+        res.add("content", contents);
+        res.addProperty("isError", !ok);
         return res;
     }
 
-    private Map<String, Object> handleResourcesList() {
-        List<Map<String, Object>> listed = new ArrayList<>();
+    private JsonObject handleResourcesList() {
+        JsonArray listed = new JsonArray();
         for (McpResource resource : resources.all()) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("uri", resource.uri());
-            map.put("name", resource.name());
-            if (resource.description() != null) map.put("description", resource.description());
-            if (resource.mimeType() != null) map.put("mimeType", resource.mimeType());
-            if (!resource.metadata().isEmpty()) map.put("_meta", resource.metadata());
+            JsonObject map = new JsonObject();
+            map.addProperty("uri", resource.uri());
+            map.addProperty("name", resource.name());
+            if (resource.description() != null) map.addProperty("description", resource.description());
+            if (resource.mimeType() != null) map.addProperty("mimeType", resource.mimeType());
+            if (!resource.metadata().isEmpty()) map.add("_meta", GSON.toJsonTree(resource.metadata()));
             listed.add(map);
         }
-        return Map.of("resources", listed);
+        JsonObject res = new JsonObject();
+        res.add("resources", capArray(listed, payloadBudget(), false));
+        return res;
     }
 
     private JsonObject handleResourcesRead(JsonObject params, JsonElement id, String caller) {
@@ -412,10 +451,36 @@ public final class McpHttpServer {
             audit.resourceRead(caller, uri, active.name(), false, "not_found");
             return rpcError(id, -32002, "Resource not found: " + uri);
         }
+        int timeoutSeconds = config.transport().callTimeoutSeconds();
         try {
-            var contents = resource.get().read(new ResourceContext(active, caller, uri));
+            // Resource readers run off the HTTP worker pool, under the same per-call deadline.
+            ResourceContents contents = callWithTimeout(() -> resource.get().read(new ResourceContext(active, caller, uri)));
             audit.resourceRead(caller, uri, active.name(), true, "ok");
-            return rpcResult(id, Map.of("contents", List.of(contents.toMap())));
+            JsonObject content = new JsonObject();
+            content.addProperty("uri", contents.uri() == null ? "" : contents.uri());
+            if (contents.mimeType() != null) content.addProperty("mimeType", contents.mimeType());
+            Object text = contents.text();
+            int budget = payloadBudget();
+            if (text instanceof String s) {
+                content.addProperty("text", truncateString(s, budget));
+            } else if (text != null) {
+                // Structured text is capped as a tree, never by cutting its JSON text in half.
+                String serialized = GSON.toJson(text);
+                if (serialized.length() > budget) {
+                    serialized = GSON.toJson(capPayload(JsonParser.parseString(serialized), budget));
+                }
+                content.addProperty("text", serialized);
+            }
+            if (contents.blob() != null) content.addProperty("blob", truncateString(contents.blob(), payloadBudget()));
+            JsonArray contentsArray = new JsonArray();
+            contentsArray.add(content);
+            JsonObject result = new JsonObject();
+            result.add("contents", contentsArray);
+            return rpcResult(id, result);
+        } catch (TimeoutException e) {
+            logger.warning("Resource read timed out after " + timeoutSeconds + "s: " + uri);
+            audit.resourceRead(caller, uri, active.name(), false, "timeout");
+            return rpcError(id, -32000, "Resource read timed out after " + timeoutSeconds + "s: " + uri);
         } catch (Exception e) {
             logger.log(Level.WARNING, "Resource read failed: " + uri, e);
             audit.resourceRead(caller, uri, active.name(), false, "exception:" + e.getClass().getSimpleName());
@@ -674,11 +739,11 @@ public final class McpHttpServer {
         }
     }
 
-    private static JsonObject rpcResult(JsonElement id, Object result) {
+    private static JsonObject rpcResult(JsonElement id, JsonElement result) {
         JsonObject o = new JsonObject();
         o.addProperty("jsonrpc", "2.0");
         if (id != null) o.add("id", id); else o.add("id", JsonNull.INSTANCE);
-        o.add("result", GSON.toJsonTree(result));
+        o.add("result", result);
         return o;
     }
 
@@ -691,6 +756,135 @@ public final class McpHttpServer {
         if (id != null) o.add("id", id); else o.add("id", JsonNull.INSTANCE);
         o.add("error", err);
         return o;
+    }
+
+    // ---- response size and call deadlines --------------------------------
+
+    private static final int RESPONSE_ENVELOPE_RESERVE = 256;
+    private static final String TRUNCATION_MARKER = "[truncated]";
+
+    /** Budget for a single result payload, leaving room for the JSON-RPC envelope. */
+    private int payloadBudget() {
+        return Math.max(64, config.transport().maxResponseChars() - RESPONSE_ENVELOPE_RESERVE);
+    }
+
+    private static int jsonLength(JsonElement element) {
+        return GSON.toJson(element).length();
+    }
+
+    /**
+     * Caps a payload as a JSON tree so the result is always valid JSON. Structured values lose
+     * entries and report {@code truncated}/{@code omittedCount}; strings get an explicit marker.
+     */
+    private static JsonElement capPayload(JsonElement payload, int maxChars) {
+        if (jsonLength(payload) <= maxChars) return payload;
+        if (payload.isJsonPrimitive() && payload.getAsJsonPrimitive().isString()) {
+            return new JsonPrimitive(truncateString(payload.getAsString(), maxChars));
+        }
+        if (payload.isJsonArray()) return capArray(payload.getAsJsonArray(), maxChars, false);
+        if (payload.isJsonObject()) return capObject(payload.getAsJsonObject(), maxChars);
+        return payload; // numbers/booleans cannot meaningfully exceed the cap
+    }
+
+    private static JsonElement capObject(JsonObject object, int maxChars) {
+        JsonObject out = object.deepCopy().getAsJsonObject();
+        if (jsonLength(out) <= maxChars) return out;
+        List<String> keys = new ArrayList<>(out.keySet());
+        int omitted = 0;
+        for (int i = keys.size() - 1; i >= 0; i--) {
+            if (jsonLength(out) <= maxChars) break;
+            out.remove(keys.get(i));
+            omitted++;
+        }
+        out.addProperty("truncated", true);
+        out.addProperty("omittedCount", omitted);
+        return out;
+    }
+
+    private static JsonElement capArray(JsonArray array, int maxChars, boolean batch) {
+        if (jsonLength(array) <= maxChars) return array;
+        JsonArray out = array.deepCopy().getAsJsonArray();
+        int omitted = 0;
+        while (jsonLength(out) > maxChars && !out.isEmpty()) {
+            out.remove(out.size() - 1);
+            omitted++;
+        }
+        if (omitted == 0) return out;
+        JsonObject marker = truncationMarker(omitted, batch);
+        out.add(marker);
+        // The marker itself consumes budget; drop further original entries if necessary.
+        while (jsonLength(out) > maxChars && out.size() > 1) {
+            out.remove(out.size() - 2);
+            omitted++;
+            updateMarker(marker, omitted, batch);
+        }
+        return out;
+    }
+
+    private static JsonObject truncationMarker(int omitted, boolean batch) {
+        JsonObject marker = new JsonObject();
+        if (batch) {
+            // Keep the aggregate a valid JSON-RPC batch: each entry is a response object.
+            marker.addProperty("jsonrpc", "2.0");
+            marker.add("id", JsonNull.INSTANCE);
+            marker.add("error", new JsonObject());
+        }
+        updateMarker(marker, omitted, batch);
+        return marker;
+    }
+
+    private static void updateMarker(JsonObject marker, int omitted, boolean batch) {
+        marker.addProperty("truncated", true);
+        marker.addProperty("omittedCount", omitted);
+        if (batch && marker.has("error")) {
+            JsonObject error = marker.getAsJsonObject("error");
+            error.addProperty("code", -32000);
+            error.addProperty("message", "Response truncated: " + omitted + " JSON-RPC response(s) omitted");
+            JsonObject data = new JsonObject();
+            data.addProperty("truncated", true);
+            data.addProperty("omittedCount", omitted);
+            error.add("data", data);
+        }
+    }
+
+    private static String truncateString(String value, int maxChars) {
+        if (jsonLength(new JsonPrimitive(value)) <= maxChars) return value; // unchanged fast path
+        // Binary search the longest prefix that still fits after JSON escaping; this also
+        // avoids cutting a UTF-16 surrogate pair in half.
+        int low = 0, high = value.length(), best = 0;
+        while (low <= high) {
+            int mid = (low + high) >>> 1;
+            int end = mid > 0 && Character.isHighSurrogate(value.charAt(mid - 1)) ? mid - 1 : mid;
+            if (jsonLength(new JsonPrimitive(value.substring(0, end) + TRUNCATION_MARKER)) <= maxChars) {
+                best = end;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return value.substring(0, best) + TRUNCATION_MARKER;
+    }
+
+    private <T> T callWithTimeout(Callable<T> call) throws Exception {
+        FutureTask<T> task = new FutureTask<>(call);
+        callExecutor.execute(task);
+        try {
+            return task.get(config.transport().callTimeoutSeconds(), TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            // Cancelling interrupts the virtual thread. Uninterruptible work may keep running,
+            // but it can no longer block the client or occupy an HTTP worker.
+            task.cancel(true);
+            throw e;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception ex) throw ex;
+            if (cause instanceof Error er) throw er;
+            throw new RuntimeException(cause);
+        } catch (InterruptedException e) {
+            task.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        }
     }
 
     private static String optString(JsonObject o, String key) {

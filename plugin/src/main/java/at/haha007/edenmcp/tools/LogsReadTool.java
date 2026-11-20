@@ -25,12 +25,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 public final class LogsReadTool implements McpTool {
     // The first character class excludes the quantifier characters, so the group
     // cannot be matched at multiple positions - avoids super-linear backtracking.
     private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
+    // Alternation inside a quantified group (e.g. (a|aa)+, (a|a?)*) also backtracks
+    // exponentially, but is not covered by NESTED_QUANTIFIER. Reject it as well;
+    // the nanoTime budget below is the real safety net for anything else.
+    private static final Pattern QUANTIFIED_ALTERNATION = Pattern.compile("\\([^)]*\\|[^)]*\\)[+*{]");
+    private static final long REGEX_TOTAL_BUDGET_NANOS = 50L * 1_000_000; // 50 ms per call
+    private static final long REGEX_LINE_BUDGET_NANOS = 5L * 1_000_000;   // 5 ms per line
+    private static final int REGEX_MAX_LINE_CHARS = 8192;
     private final LogFileAccess logs;
     private final boolean requireModerate;
     private final int defaultLimit;
@@ -90,6 +98,7 @@ public final class LogsReadTool implements McpTool {
         Pattern pattern = null;
         if (filter != null && regex) {
             if (NESTED_QUANTIFIER.matcher(filter).find()) return ToolResult.error("Regex filter rejected: nested quantifier");
+            if (QUANTIFIED_ALTERNATION.matcher(filter).find()) return ToolResult.error("Regex filter rejected: quantified alternation");
             try {
                 pattern = Pattern.compile(filter);
             } catch (Exception e) {
@@ -106,6 +115,8 @@ public final class LogsReadTool implements McpTool {
             out.put("count", tail.lines().size());
             out.put("truncated", tail.truncated());
             return ToolResult.ok(out);
+        } catch (RegexTimeoutException e) {
+            return ToolResult.error("Regex filter timed out");
         } catch (IOException e) {
             return ToolResult.error("Failed to read logs: " + e.getMessage());
         }
@@ -168,20 +179,71 @@ public final class LogsReadTool implements McpTool {
         String text = decodeUtf8(bytes, bytes.length);
         String[] parts = text.split("\\R", -1);
         Deque<String> out = new ArrayDeque<>();
-        for (int i = 0; i < parts.length; i++) {
-            String line = parts[i];
-            if (i == parts.length - 1 && line.isEmpty()) continue;
-            if (filter != null && !filter.isBlank()) {
-                if (pattern != null) {
-                    if (!pattern.matcher(line).find()) continue;
-                } else if (!line.contains(filter)) {
-                    continue;
+        long totalDeadline = System.nanoTime() + REGEX_TOTAL_BUDGET_NANOS;
+        try {
+            for (int i = 0; i < parts.length; i++) {
+                String line = parts[i];
+                if (i == parts.length - 1 && line.isEmpty()) continue;
+                if (filter != null && !filter.isBlank()) {
+                    if (pattern != null) {
+                        if (!matchesWithinBudget(pattern, line, totalDeadline)) continue;
+                    } else if (!line.contains(filter)) {
+                        continue;
+                    }
                 }
+                out.addLast(line);
+                while (out.size() > limit) out.removeFirst();
             }
-            out.addLast(line);
-            while (out.size() > limit) out.removeFirst();
+        } catch (RegexBudgetExceeded e) {
+            throw new RegexTimeoutException();
         }
         return new Tail(new ArrayList<>(out), truncated);
+    }
+
+    /** Applies the regex to at most REGEX_MAX_LINE_CHARS characters under a per-line and a per-call budget. */
+    static boolean matchesWithinBudget(Pattern pattern, String line, long totalDeadline) {
+        long lineDeadline = Math.min(totalDeadline, System.nanoTime() + REGEX_LINE_BUDGET_NANOS);
+        CharSequence input = line.length() <= REGEX_MAX_LINE_CHARS
+                ? line
+                : line.subSequence(0, REGEX_MAX_LINE_CHARS);
+        return pattern.matcher(new BudgetedCharSequence(input, lineDeadline)).find();
+    }
+
+    /** Thrown by the budgeted CharSequence whenever a regex reads past its deadline. */
+    static final class RegexBudgetExceeded extends RuntimeException {
+        RegexBudgetExceeded() { super("Regex budget exceeded"); }
+    }
+
+    /** Signals to execute() that a regex filter exceeded its CPU budget. */
+    static final class RegexTimeoutException extends IOException {
+        RegexTimeoutException() { super("Regex filter timed out"); }
+    }
+
+    /**
+     * Matcher reads its input exclusively through charAt()/length()/subSequence()
+     * while backtracking, so checking the clock in those methods bounds regex CPU
+     * time even for patterns with exponential backtracking.
+     */
+    static final class BudgetedCharSequence implements CharSequence {
+        private final CharSequence delegate;
+        private final long deadlineNanos;
+
+        BudgetedCharSequence(CharSequence delegate, long deadlineNanos) {
+            this.delegate = delegate;
+            this.deadlineNanos = deadlineNanos;
+        }
+
+        private void check() {
+            if (System.nanoTime() - deadlineNanos >= 0) throw new RegexBudgetExceeded();
+        }
+
+        @Override public int length() { check(); return delegate.length(); }
+        @Override public char charAt(int index) { check(); return delegate.charAt(index); }
+        @Override public @NotNull CharSequence subSequence(int start, int end) {
+            check();
+            return new BudgetedCharSequence(delegate.subSequence(start, end), deadlineNanos);
+        }
+        @Override public @NotNull String toString() { check(); return delegate.toString(); }
     }
 
     private static String decodeUtf8(byte[] bytes, int length) throws IOException {

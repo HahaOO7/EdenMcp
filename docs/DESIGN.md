@@ -57,6 +57,8 @@ EdenMcp runs in exactly one mode at a time. The mode is configured on the server
 - The server binds to a configured host/port (separate from the Minecraft game port). Remote operation on normal hosting platforms is a supported deployment model, so the MCP endpoint must be usable without requiring SSH port-forwarding or an external reverse proxy.
 - **TLS:** to protect the access key and data in transit, the transport enables **built-in TLS** by default. On first startup the plugin generates a self-signed certificate/keypair (stored in the plugin data folder) and enables TLS, logging the certificate **SHA-256 fingerprint** for out-of-band verification (trust-on-first-use/pinning by the client). The generated keystore and its random password file are written owner-only; there is no hardcoded keystore password. TLS 1.2/1.3 with AEAD ciphers only is enforced. Operators may instead supply their own keystore (`mode: custom`) or enable optional mTLS with a truststore (`require-client-cert` + truststore). TLS can be explicitly disabled for trusted-network or tunneled deployments, but this produces a prominent warning because plain HTTP exposes the access key and tool I/O.
 - **Sessions:** `initialize` issues an `Mcp-Session-Id` (returned as a header and in the result). `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `notifications/initialized` require a valid session; `ping` is a connectivity check that does not. Sessions are bound to the principal (key id) that created them, expire after an idle timeout (`mcp.transport.session-idle-seconds`, default 1800), are capped (`mcp.transport.max-sessions`, default 100), and are invalidated on key rotation. `/message` accepts the session id via header or `sessionId` query parameter. These are internal defaults; clients handle them automatically.
+- **Response cap:** every serialized JSON response is bounded by `mcp.transport.max-response-chars` (default 1,000,000; minimum 512). Cap enforcement operates on whole JSON values rather than byte slices: structured tool/resource payloads drop entries and report `truncated: true` plus `omittedCount`, strings are truncated with an explicit `[truncated]` marker, and an oversized JSON-RPC batch drops whole response entries and appends a truncation error response so the batch stays valid. The JSON-RPC envelope (`jsonrpc`, `id`, `result`/`error`) and MCP `content[].type`/`text` and `isError` shape are preserved. Normal payloads are serialized once for `content.text` and once for the final envelope; the redundant intermediate `toJson` -> `toJsonTree` conversion in `rpcResult` is gone. Oversized payloads only pay an extra parse/cap pass.
+- **Call deadlines:** tool execution and resource reads run on a dedicated virtual-thread-per-task executor, not the bounded HTTP worker pool. Each call has `mcp.transport.call-timeout-seconds` (default 30; minimum 1) to complete; on expiry the task is cancelled, a clean error tool result / JSON-RPC error is returned, and the audit outcome is `timeout`. Cancellation interrupts the virtual thread, but work that ignores interruption may keep running in the background; it can no longer block the client.
 
 ### Authentication (access key)
 
@@ -107,7 +109,7 @@ Suggested mapping:
 
 ### Moderate tools
 - `edenmcp.chat.send` – send a message to a player or broadcast; rate-limited and attributable (prefix/logged).
-- Hook-provided moderate actions explicitly marked safe-mutation, including `edenmcp.spark.profiler.control` and `edenmcp.spark.diagnostics.run`. Spark results are always saved locally (`--save-to-file`); uploading is not exposed.
+- Hook-provided moderate actions explicitly marked safe-mutation, including `edenmcp.spark.profiler.control` and `edenmcp.spark.diagnostics.run`. Spark results are always saved locally (`--save-to-file`); uploading is not exposed. Note: although `edenmcp.spark.diagnostics.run` is classified `MODERATE_ACTION`, `command=heapdump` has an effective **UNSAFE** sub-gate and reports `DANGEROUS` response metadata; it is rate-limited to one invocation per 60 seconds and writes a potentially multi-GB heap dump to a local file (optionally after a GC via `runGcBefore`).
 
 ### Unsafe tools
 - `edenmcp.command.dispatch` – execute a console command (**`UNSAFE_ACTION` by default**, highest risk; strongly audited).
@@ -201,6 +203,8 @@ mcp:
     # cors-max-age-seconds: 600
     # auth-failure-prune-threshold: 1000
     # read-buffer-bytes: 8192
+    # max-response-chars: 1000000     # cap serialized JSON responses (min 512); truncates to valid JSON
+    # call-timeout-seconds: 30        # deadline for tool execution / resource reads (min 1)
     tls:
       enabled: true         # default; protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
@@ -282,13 +286,13 @@ audit:
 
 - Require and verify the access key on every request; reject unauthenticated access early. Failed authentication is throttled per source IP, and auth failures are always logged.
 - Log every tool invocation, resource read, and mode change with timestamp, tool/resource id, mode, caller identity (as available from transport), and a sanitized, length-bounded outcome. Resource reads share the `audit.log-tool-calls` toggle, and resource content is never written to the log. Sensitive content is **redacted at log-write time**: command text, chat messages, and tool error details are not written by default, so `edenmcp.logs.read` cannot expose them. Operators who explicitly want detail can enable `audit.log-verbose`.
-- Enforce bounded inputs: bounded request bodies (1 MiB) and JSON-RPC batches, capped SSE clients and a bounded HTTP worker pool, log line/filter bounds with regex-abuse rejection, and rate limits for chat.
+- Enforce bounded inputs and outputs: bounded request bodies (1 MiB) and JSON-RPC batches, capped SSE clients and a bounded HTTP worker pool, log line/filter bounds with regex-abuse rejection, rate limits for chat, a maximum serialized response size (`mcp.transport.max-response-chars`) with structurally valid truncation, and a per-call deadline (`mcp.transport.call-timeout-seconds`) executed off the HTTP pool.
 - Make `unsafe` mode, remote binding, and TLS-disabled state clearly visible in startup/runtime logs (including the generated certificate SHA-256 fingerprint when applicable). A warning is emitted if audit logging is disabled.
 - Treat the access key as the primary authorization gate; operators should combine it with network-level controls for remote deployments.
 
 ## Implementation Status
 
-Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, root-confined text file list/read/write, and the LuckPerms and Spark hooks. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
+Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, root-confined text file list/read/write, and the LuckPerms and Spark hooks. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, bounded/truncated responses and per-call execution timeouts, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
 
 ## Resolved Decisions
 

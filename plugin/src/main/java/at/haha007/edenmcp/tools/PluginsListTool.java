@@ -9,12 +9,20 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public final class PluginsListTool implements McpTool {
+    private final Plugin plugin;
     private final int maxEntries;
+    private final int syncTimeoutSeconds;
 
-    public PluginsListTool(int maxEntries) {
+    public PluginsListTool(Plugin plugin, int maxEntries, int syncTimeoutSeconds) {
+        this.plugin = plugin;
         this.maxEntries = Math.max(1, maxEntries);
+        this.syncTimeoutSeconds = syncTimeoutSeconds;
     }
 
     @Override public String name() { return "edenmcp.plugins.list"; }
@@ -37,21 +45,37 @@ public final class PluginsListTool implements McpTool {
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());
         }
-        Plugin[] plugins = Bukkit.getPluginManager().getPlugins();
-        List<Map<String, Object>> list = new ArrayList<>();
-        for (Plugin p : plugins) {
-            if (list.size() >= limit) break;
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("name", p.getName());
-            m.put("enabled", p.isEnabled());
-            m.put("version", p.getPluginMeta().getVersion());
-            list.add(m);
+        try {
+            Map<String, Object> out = runSync(() -> {
+                Plugin[] plugins = Bukkit.getPluginManager().getPlugins();
+                List<Map<String, Object>> list = new ArrayList<>();
+                for (Plugin p : plugins) {
+                    if (list.size() >= limit) break;
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("name", p.getName());
+                    m.put("enabled", p.isEnabled());
+                    m.put("version", p.getPluginMeta().getVersion());
+                    list.add(m);
+                }
+                Map<String, Object> snapshot = new LinkedHashMap<>();
+                snapshot.put("count", list.size());
+                snapshot.put("total", plugins.length);
+                snapshot.put("hasMore", plugins.length > list.size());
+                snapshot.put("plugins", list);
+                return snapshot;
+            });
+            return ToolResult.ok(out);
+        } catch (TimeoutException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            return ToolResult.error("Plugins list timed out");
+        } catch (Exception e) {
+            return ToolResult.error("Plugins list failed");
         }
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("count", list.size());
-        out.put("total", plugins.length);
-        out.put("hasMore", plugins.length > list.size());
-        out.put("plugins", list);
-        return ToolResult.ok(out);
+    }
+
+    private <T> T runSync(Callable<T> task) throws Exception {
+        if (Bukkit.isPrimaryThread()) return task.call();
+        Future<T> future = Bukkit.getScheduler().callSyncMethod(plugin, task);
+        return future.get(syncTimeoutSeconds, TimeUnit.SECONDS);
     }
 }

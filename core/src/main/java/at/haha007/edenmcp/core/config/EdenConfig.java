@@ -48,7 +48,35 @@ public record EdenConfig(
                                   int shutdownGraceSeconds, int sseKeepaliveMs,
                                   int sessionPruneIntervalMs, int corsMaxAgeSeconds,
                                   int authFailurePruneThreshold, int readBufferBytes,
-                                  TlsConfig tls) {}
+                                  TlsConfig tls, int maxResponseChars, int callTimeoutSeconds) {
+        public static final int DEFAULT_MAX_RESPONSE_CHARS = 1_000_000;
+        public static final int DEFAULT_CALL_TIMEOUT_SECONDS = 30;
+
+        /** Compatibility constructor for callers that predate the response/timeout caps. */
+        public TransportConfig(String type, String bind, int port,
+                               List<String> allowedHosts, List<String> allowedOrigins,
+                               int maxBodyBytes, int maxBatchSize, int maxSseClients,
+                               int sessionIdleSeconds, int maxSessions,
+                               int threadPoolCoreSize, int threadPoolMaxSize,
+                               int threadPoolKeepAliveSeconds, int threadPoolQueueCapacity,
+                               int shutdownGraceSeconds, int sseKeepaliveMs,
+                               int sessionPruneIntervalMs, int corsMaxAgeSeconds,
+                               int authFailurePruneThreshold, int readBufferBytes,
+                               TlsConfig tls) {
+            this(type, bind, port, allowedHosts, allowedOrigins, maxBodyBytes, maxBatchSize,
+                    maxSseClients, sessionIdleSeconds, maxSessions, threadPoolCoreSize,
+                    threadPoolMaxSize, threadPoolKeepAliveSeconds, threadPoolQueueCapacity,
+                    shutdownGraceSeconds, sseKeepaliveMs, sessionPruneIntervalMs,
+                    corsMaxAgeSeconds, authFailurePruneThreshold, readBufferBytes, tls,
+                    DEFAULT_MAX_RESPONSE_CHARS, DEFAULT_CALL_TIMEOUT_SECONDS);
+        }
+
+        public TransportConfig {
+            // Keep enough room for a minimal, still-valid JSON-RPC error response.
+            maxResponseChars = Math.max(512, maxResponseChars);
+            callTimeoutSeconds = Math.max(1, callTimeoutSeconds);
+        }
+    }
 
     public record TlsConfig(boolean enabled, String mode, String certPath, String keyPath,
                             String keystorePath, String keystorePassword,
@@ -100,6 +128,8 @@ public record EdenConfig(
         int corsMaxAgeSeconds = Math.max(0, cfg.getInt("mcp.transport.cors-max-age-seconds", 600));
         int authFailurePruneThreshold = Math.max(1, cfg.getInt("mcp.transport.auth-failure-prune-threshold", 1000));
         int readBufferBytes = Math.max(256, cfg.getInt("mcp.transport.read-buffer-bytes", 8192));
+        int maxResponseChars = Math.max(512, cfg.getInt("mcp.transport.max-response-chars", 1_000_000));
+        int callTimeoutSeconds = Math.max(1, cfg.getInt("mcp.transport.call-timeout-seconds", 30));
 
         boolean tlsEnabled = cfg.getBoolean("mcp.transport.tls.enabled", true);
         String tlsMode = cfg.getString("mcp.transport.tls.mode", "self-signed");
@@ -120,7 +150,8 @@ public record EdenConfig(
                 sseKeepaliveMs, sessionPruneIntervalMs, corsMaxAgeSeconds, authFailurePruneThreshold,
                 readBufferBytes,
                 new TlsConfig(tlsEnabled, tlsMode, certPath, keyPath, ksPath, ksPass,
-                        requireClientCert, trustPath, trustPass, selfSignedKeySize, selfSignedValidityDays));
+                        requireClientCert, trustPath, trustPass, selfSignedKeySize, selfSignedValidityDays),
+                maxResponseChars, callTimeoutSeconds);
 
         AuthConfig auth = new AuthConfig(
                 cfg.getBoolean("mcp.auth.allow-legacy-header", false),

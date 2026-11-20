@@ -105,6 +105,68 @@ class LogsToolTest {
     }
 
     @Test
+    void rejectsCatastrophicAlternationPatterns() throws Exception {
+        Files.writeString(tempDir.resolve("latest.log"), "aaaaaaaaaa\n");
+        LogsReadTool tool = new LogsReadTool(tempDir, false, EdenConfig.ToolConfig.defaults());
+
+        for (String filter : java.util.List.of("(a|aa)+$", "(a|a?)+$", "(a|aa)*$")) {
+            ToolResult result = tool.execute(context("filter", filter, "regex", true));
+            assertFalse(result.success(), filter + " should be rejected");
+            String error = String.valueOf(result.error());
+            assertTrue(error.contains("Regex filter rejected"), error);
+        }
+    }
+
+    @Test
+    void benignRegexFiltersLines() throws Exception {
+        Files.writeString(tempDir.resolve("latest.log"), "error one\ninfo two\nERROR three\nerror four\n");
+        LogsReadTool tool = new LogsReadTool(tempDir, false, EdenConfig.ToolConfig.defaults());
+
+        Map<String, Object> out = content(tool.execute(context("filter", "^error", "regex", true)));
+        assertEquals(2, out.get("count"));
+        assertEquals(java.util.List.of("error one", "error four"), out.get("lines"));
+    }
+
+    @Test
+    void substringFilterStillWorks() throws Exception {
+        Files.writeString(tempDir.resolve("latest.log"), "error one\ninfo two\nerror four\n");
+        LogsReadTool tool = new LogsReadTool(tempDir, false, EdenConfig.ToolConfig.defaults());
+
+        Map<String, Object> out = content(tool.execute(context("filter", "error")));
+        assertEquals(java.util.List.of("error one", "error four"), out.get("lines"));
+    }
+
+    @Test
+    void longLinesAreMatchedOnBoundedPrefix() throws Exception {
+        String longError = "error " + "x".repeat(9000);
+        Files.writeString(tempDir.resolve("latest.log"), longError + "\ninfo line\n");
+        LogsReadTool tool = new LogsReadTool(tempDir, false, EdenConfig.ToolConfig.defaults());
+
+        Map<String, Object> out = content(tool.execute(context("filter", "^error", "regex", true)));
+        assertEquals(java.util.List.of(longError), out.get("lines"));
+    }
+
+    @Test
+    void catastrophicPatternEvadingHeuristicsTimesOut() throws Exception {
+        // Nested quantifier hidden behind an extra group: neither static guard matches this.
+        Files.writeString(tempDir.resolve("latest.log"), "a".repeat(2000) + "b\n");
+        LogsReadTool tool = new LogsReadTool(tempDir, false, EdenConfig.ToolConfig.defaults());
+
+        ToolResult result = tool.execute(context("filter", "((a+))+$", "regex", true));
+        assertFalse(result.success());
+        assertEquals("Regex filter timed out", result.error());
+    }
+
+    @Test
+    void budgetedCharSequenceThrowsAfterDeadline() {
+        LogsReadTool.BudgetedCharSequence seq =
+                new LogsReadTool.BudgetedCharSequence("error", System.nanoTime() - 1);
+        assertThrows(LogsReadTool.RegexBudgetExceeded.class, seq::length);
+        assertThrows(LogsReadTool.RegexBudgetExceeded.class, () -> seq.charAt(0));
+        assertThrows(LogsReadTool.RegexBudgetExceeded.class, () -> seq.subSequence(0, 1));
+    }
+
+    @Test
     void listsAvailableLogsWithMetadata() throws Exception {
         Files.writeString(tempDir.resolve("latest.log"), "log\n");
         Files.writeString(tempDir.resolve("old.log.gz"), "old\n");

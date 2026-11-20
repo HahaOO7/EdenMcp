@@ -214,7 +214,7 @@ public final class LuckPermsHook implements Hook {
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.requiredArg(args, "name");
             int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_NODES, 500);
-            Group group = api.getGroupManager().loadGroup(name).join()
+            Group group = LpSupport.await(api.getGroupManager().loadGroup(name), "loadGroup")
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Group not found"));
             QueryOptions query = LpSupport.groupQueryOptions(api, args);
             var meta = group.getCachedData().getMetaData(query);
@@ -299,7 +299,7 @@ public final class LuckPermsHook implements Hook {
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.requiredArg(args, "name");
             int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
-            Track track = api.getTrackManager().loadTrack(name).join()
+            Track track = LpSupport.await(api.getTrackManager().loadTrack(name), "loadTrack")
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Track not found"));
             List<String> allGroups = List.copyOf(track.getGroups());
             List<String> groups = LpSupport.limited(allGroups, limit);
@@ -414,7 +414,8 @@ public final class LuckPermsHook implements Hook {
                 }
             }
 
-            List<Action> actions = new ArrayList<>(api.getActionLogger().getLog().join().getContent());
+            List<Action> actions = new ArrayList<>(
+                    LpSupport.await(api.getActionLogger().getLog(), "getAuditLog").getContent());
             actions.sort(Comparator.comparing(Action::getTimestamp).reversed());
 
             List<Map<String, Object>> entries = new ArrayList<>();
@@ -580,11 +581,11 @@ public final class LuckPermsHook implements Hook {
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.nameArg(args, "name");
-            if (api.getGroupManager().loadGroup(name).join().isPresent()) {
+            if (LpSupport.await(api.getGroupManager().loadGroup(name), "loadGroup").isPresent()) {
                 return ToolResult.error("Group already exists");
             }
-            Group group = api.getGroupManager().createAndLoadGroup(name).join();
-            api.getGroupManager().saveGroup(group).join();
+            Group group = LpSupport.await(api.getGroupManager().createAndLoadGroup(name), "createAndLoadGroup");
+            LpSupport.await(api.getGroupManager().saveGroup(group), "saveGroup");
             LpSupport.audit(api, context.callerId(), "created group " + name,
                     Action.Target.Type.GROUP, group.getName(), null);
             return ToolResult.ok(Map.of("name", group.getName(), "created", true));

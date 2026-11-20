@@ -9,9 +9,15 @@ import net.luckperms.api.LuckPerms;
 
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /** Base class for the LuckPerms tools, with shared classification and error handling. */
 abstract class LpTool implements McpTool {
+    private static final Logger LOG = Logger.getLogger(LpTool.class.getName());
+    static final String TIMEOUT_MESSAGE = "LuckPerms operation timed out";
+    static final String GENERIC_MESSAGE = "LuckPerms error";
+
     private final CapabilityLevel level;
     private final SideEffects sideEffects;
 
@@ -44,12 +50,22 @@ abstract class LpTool implements McpTool {
         Map<String, Object> args = context.arguments() == null ? Map.of() : context.arguments();
         try {
             return run(LpSupport.api(), context, args);
-        } catch (LpSupport.InvalidArgument e) {
-            return ToolResult.error(e.getMessage());
-        } catch (Throwable t) {
-            String message = t.getMessage();
-            return ToolResult.error("LuckPerms error: " + (message == null ? t.getClass().getSimpleName() : message));
+        } catch (Exception e) {
+            return errorResult(e);
         }
+    }
+
+    /** Maps failures to safe caller-facing messages; details are only logged server-side. */
+    static ToolResult errorResult(Exception e) {
+        if (e instanceof LpSupport.InvalidArgument invalid) {
+            return ToolResult.error(invalid.getMessage());
+        }
+        if (e instanceof LpSupport.LuckPermsTimeoutException) {
+            LOG.log(Level.WARNING, "LuckPerms operation timed out", e);
+            return ToolResult.error(TIMEOUT_MESSAGE);
+        }
+        LOG.log(Level.WARNING, "Unexpected LuckPerms tool failure", e);
+        return ToolResult.error(GENERIC_MESSAGE);
     }
 
     protected abstract ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception;

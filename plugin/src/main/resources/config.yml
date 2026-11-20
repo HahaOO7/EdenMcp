@@ -25,6 +25,10 @@ mcp:
     # cors-max-age-seconds: 600
     # auth-failure-prune-threshold: 1000
     # read-buffer-bytes: 8192           # minimum 256
+    # max-response-chars: 1000000       # cap for serialized JSON responses (minimum 512); oversized
+    #                                   # tool/resource payloads are trimmed to valid JSON and report
+    #                                   # truncated=true / omittedCount (strings get a [truncated] marker)
+    # call-timeout-seconds: 30          # deadline for each tool execution and resource read (minimum 1)
     tls:
       enabled: true         # protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom
