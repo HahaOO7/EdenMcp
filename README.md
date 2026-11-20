@@ -174,3 +174,7 @@ lifecycle and examples.
 - Invalid, symlinked, or world-readable `.key` files are quarantined as `.key.invalid` and replaced with a fresh key rather than failing startup.
 
 For the full rationale and configuration reference, see [docs/DESIGN.md](docs/DESIGN.md) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## License
+
+EdenMcp is licensed under the [MIT License](LICENSE) — use, modify, and distribute it freely, including commercially. Provided "AS IS", without warranty or liability.
