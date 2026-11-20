@@ -65,6 +65,41 @@ class ServerFileAccessTest {
     }
 
     @Test
+    void nonRecursiveListingIsBoundedButReportsTotal() throws Exception {
+        for (int i = 0; i < 20; i++) {
+            Files.writeString(serverDir.resolve("f%02d.txt".formatted(i)), "x");
+        }
+        ServerFileAccess files = access();
+
+        ServerFileAccess.Listing limited = files.list("", 3, false, 1, null);
+        assertEquals(List.of("f00.txt", "f01.txt", "f02.txt"),
+                limited.entries().stream().map(ServerFileAccess.FileEntry::name).toList());
+        assertEquals(3, limited.entries().size());
+        assertEquals(20, limited.total());
+        assertTrue(limited.truncated());
+
+        ServerFileAccess.Listing filtered = files.list("", 2, false, 1, "f1*.txt");
+        assertEquals(List.of("f10.txt", "f11.txt"),
+                filtered.entries().stream().map(ServerFileAccess.FileEntry::name).toList());
+        assertEquals(10, filtered.total());
+        assertTrue(filtered.truncated());
+
+        ServerFileAccess.Listing all = files.list("", 100, false, 1, null);
+        assertEquals(20, all.entries().size());
+        assertEquals(20, all.total());
+        assertFalse(all.truncated());
+    }
+
+    @Test
+    void readWithMaxIntByteLimitDoesNotOverflow() throws Exception {
+        Files.writeString(serverDir.resolve("small.txt"), "hello\n");
+        ServerFileAccess files = access();
+
+        assertEquals("hello\n", files.read("small.txt", Integer.MAX_VALUE).content());
+        assertEquals("hello\n", files.read("small.txt", Integer.MAX_VALUE, 0, 1).content());
+    }
+
+    @Test
     void readsFilesAnywhereUnderTheServerRoot() throws Exception {
         Files.writeString(serverDir.resolve("server.properties"), "server-port=25565\n");
         Path nested = serverDir.resolve("plugins").resolve("EdenMcp");
@@ -271,14 +306,17 @@ class ServerFileAccessTest {
         assertEquals(4, files.list("plugins", 100, true, 2, null).entries().size());
         ServerFileAccess.Listing deep = files.list("plugins", 100, true, 5, null);
         assertEquals(5, deep.entries().size());
+        assertEquals(5, deep.total());
         assertFalse(deep.truncated());
 
         ServerFileAccess.Listing yml = files.list("", 100, true, 5, "**/*.yml");
         assertEquals(List.of("plugins/EdenMcp/config.yml", "plugins/a.yml"),
                 yml.entries().stream().map(ServerFileAccess.FileEntry::path).sorted().toList());
+        assertEquals(2, yml.total());
 
         ServerFileAccess.Listing limited = files.list("plugins", 2, true, 5, null);
         assertEquals(2, limited.entries().size());
+        assertEquals(5, limited.total());
         assertTrue(limited.truncated());
 
         assertThrows(IOException.class, () -> files.list("", 100, true, 5, "["));

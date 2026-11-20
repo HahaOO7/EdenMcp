@@ -15,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.logging.Logger;
 
 /** Dispatches a fixed spark command on the server thread and captures its reply for the caller. */
@@ -24,6 +25,9 @@ final class SparkCommandRunner {
     private static final int MAX_OUTPUT_LINES = 200;
     private static final int MAX_LINE_CHARS = 2000;
     private static final int MAX_TOTAL_CHARS = 64_000;
+    private static final long MIN_QUIET_MILLIS = 1;
+    private static final long MAX_QUIET_MILLIS = 5_000;
+    private static final long POLL_MILLIS = 10;
 
     private final Plugin plugin;
     private final Logger logger;
@@ -48,12 +52,12 @@ final class SparkCommandRunner {
         }
     }
 
-    @SuppressWarnings("BusyWait")
     Result run(String command, String action, ToolContext context) throws Exception {
         List<String> lines = new CopyOnWriteArrayList<>();
         boolean[] truncated = {false};
         int[] capturedChars = {0};
-        CommandSender capture = capturingSender(lines, truncated, capturedChars);
+        int[] received = {0};
+        CommandSender capture = capturingSender(lines, truncated, capturedChars, received);
         CompletableFuture<Boolean> future = new CompletableFuture<>();
 
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -72,12 +76,9 @@ final class SparkCommandRunner {
             throw e;
         }
 
-        // Spark sends a short acknowledgement synchronously and some follow-up messages from a
-        // worker thread. Give those a brief window to arrive before returning the captured reply.
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settleMillis);
-        while (lines.isEmpty() && System.nanoTime() < deadline) {
-            Thread.sleep(25);
-        }
+        // Spark sends a short acknowledgement synchronously and detailed output from a worker
+        // thread. Wait for a quiet period after *any* output, not just after the first line.
+        awaitQuiet(() -> received[0], settleMillis);
 
         logger.warning("[SPARK] action=" + action
                 + " caller=" + context.callerId()
@@ -88,8 +89,31 @@ final class SparkCommandRunner {
         return new Result(command, dispatched, List.copyOf(lines), truncated[0]);
     }
 
+    /**
+     * Waits until no new command output has arrived for a short window, with an overall bound.
+     * {@code activity} counts every accepted message, including ones dropped by the output caps.
+     */
+    @SuppressWarnings("BusyWait")
+    static void awaitQuiet(IntSupplier activity, long settleMillis) throws InterruptedException {
+        long quietNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(MIN_QUIET_MILLIS, settleMillis));
+        long maxMillis = Math.clamp(settleMillis * 6L, 2_000L, MAX_QUIET_MILLIS);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxMillis);
+        int last = activity.getAsInt();
+        long lastChange = System.nanoTime();
+        while (System.nanoTime() < deadline) {
+            int current = activity.getAsInt();
+            if (current != last) {
+                last = current;
+                lastChange = System.nanoTime();
+            }
+            if (System.nanoTime() - lastChange >= quietNanos) return;
+            Thread.sleep(POLL_MILLIS);
+        }
+    }
+
     @SuppressWarnings("JavaReflectionInvocation")
-    private static CommandSender capturingSender(List<String> lines, boolean[] truncated, int[] capturedChars) {
+    private static CommandSender capturingSender(List<String> lines, boolean[] truncated,
+                                                  int[] capturedChars, int[] received) {
         // Paper exposes a sender implementation that forwards command feedback to a Consumer.
         // Using it keeps Bukkit's command dispatcher happy (it needs a vanilla-compatible
         // sender) while still capturing the reply for the MCP caller.
@@ -98,6 +122,7 @@ final class SparkCommandRunner {
             InvocationHandler handler = (proxy, method, args) -> {
                 if ("accept".equals(method.getName())) {
                     if (args != null && args.length > 0) {
+                        received[0]++;
                         String line = render(args[0]);
                         if (line.length() > MAX_LINE_CHARS) {
                             line = line.substring(0, MAX_LINE_CHARS) + "...";

@@ -11,16 +11,39 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /** Starts/stops/cancels the Spark profiler using only pre-validated command fragments. */
 final class SparkProfilerTool implements McpTool {
     private static final Set<String> ACTIONS = Set.of("start", "stop", "cancel");
     private static final Set<String> MODES = Set.of("cpu", "alloc", "lock");
+    private static final long MIN_START_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(60);
 
-    private final SparkCommandRunner runner;
+    // Same cheap static guards the log filter uses. The pattern itself is handed to Spark, so
+    // these heuristics are the only chance to reject pathological backtracking up front.
+    private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
+    private static final Pattern QUANTIFIED_ALTERNATION = Pattern.compile("\\([^)]*\\|[^)]*\\)[+*{]");
+
+    /** Test seam: the production runner talks to Bukkit, which is unavailable in unit tests. */
+    @FunctionalInterface
+    interface Runner {
+        SparkCommandRunner.Result run(String command, String action, ToolContext context) throws Exception;
+    }
+
+    private final Runner runner;
     @Nullable private final SparkDataStore store;
+    private final Object startLock = new Object();
+    @Nullable private Long lastStartNanos;
+    private boolean activeStart;
 
+    // Lambda (rather than a method reference) keeps a null runner from failing at construction time.
+    @SuppressWarnings("Convert2MethodRef")
     SparkProfilerTool(SparkCommandRunner runner, @Nullable SparkDataStore store) {
+        this((command, action, context) -> runner.run(command, action, context), store);
+    }
+
+    SparkProfilerTool(Runner runner, @Nullable SparkDataStore store) {
         this.runner = runner;
         this.store = store;
     }
@@ -82,21 +105,63 @@ final class SparkProfilerTool implements McpTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
+        boolean startReserved = false;
         try {
             Map<String, Object> args = context.arguments();
             String action = SparkArgs.enumeration(args, "action", null, ACTIONS);
             if (action == null) return ToolResult.error("Missing 'action'");
 
             String command = buildCommand(action, args);
+            if ("start".equals(action)) {
+                String rejection = reserveStart();
+                if (rejection != null) return ToolResult.error(rejection);
+                startReserved = true;
+            }
+
             SparkCommandRunner.Result result = runner.run(command, "profiler." + action, context);
+            if ("start".equals(action)) {
+                if (!result.dispatched()) clearActiveStart();
+            } else if ("stop".equals(action) || "cancel".equals(action)) {
+                clearActiveStart();
+            }
+
             Map<String, Object> out = new LinkedHashMap<>(result.toMap());
             out.put("storage", "local-only");
+            out.put("storageNote", "Profiles are written only to the server's local disk and are never uploaded; "
+                    + "long or repeated sessions can consume significant disk space.");
             out.put("recentProfiles", recentProfiles());
             return ToolResult.ok(out);
         } catch (IllegalArgumentException e) {
+            if (startReserved) clearActiveStart();
             return ToolResult.error(e.getMessage());
         } catch (Exception e) {
+            if (startReserved) clearActiveStart();
             return ToolResult.error("Spark command failed: " + message(e));
+        }
+    }
+
+    /** Returns a rejection reason, or null when this start may be dispatched. */
+    private @Nullable String reserveStart() {
+        synchronized (startLock) {
+            long now = System.nanoTime();
+            if (lastStartNanos != null) {
+                long elapsed = now - lastStartNanos;
+                if (elapsed >= 0 && elapsed < MIN_START_INTERVAL_NANOS) {
+                    return "profiler start rate limited: wait at least 60 seconds between starts";
+                }
+            }
+            if (activeStart) {
+                return "profiler start rejected: a session is already active; stop or cancel it first";
+            }
+            activeStart = true;
+            lastStartNanos = now;
+            return null;
+        }
+    }
+
+    private void clearActiveStart() {
+        synchronized (startLock) {
+            activeStart = false;
         }
     }
 
@@ -133,8 +198,17 @@ final class SparkProfilerTool implements McpTool {
 
         String thread = SparkArgs.optionalThread(args);
         if (thread != null) {
+            boolean regex = SparkArgs.bool(args, "threadRegex", false);
+            if (regex) {
+                if (NESTED_QUANTIFIER.matcher(thread).find()) {
+                    throw new IllegalArgumentException("Invalid 'thread' regex: nested quantifier");
+                }
+                if (QUANTIFIED_ALTERNATION.matcher(thread).find()) {
+                    throw new IllegalArgumentException("Invalid 'thread' regex: quantified alternation");
+                }
+            }
             command.append(" --thread ").append(SparkArgs.quote(thread));
-            if (SparkArgs.bool(args, "threadRegex", false)) command.append(" --regex");
+            if (regex) command.append(" --regex");
         }
         if (SparkArgs.bool(args, "combineAll", false)) command.append(" --combine-all");
         if (SparkArgs.bool(args, "notCombined", false)) command.append(" --not-combined");

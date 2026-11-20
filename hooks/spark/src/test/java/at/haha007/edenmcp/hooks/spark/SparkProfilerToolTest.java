@@ -9,7 +9,10 @@ import at.haha007.edenmcp.api.ToolContext;
 import at.haha007.edenmcp.api.ToolResult;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -19,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SparkProfilerToolTest {
-    private final SparkProfilerTool tool = new SparkProfilerTool(null, null);
+    private final SparkProfilerTool tool = new SparkProfilerTool((SparkCommandRunner) null, null);
 
     @Test
     void toolIsAModerateObservableAction() {
@@ -102,6 +105,24 @@ class SparkProfilerToolTest {
         assertThrows(IllegalArgumentException.class, () -> tool.buildCommand("start", args("thread", "bad{thread}")));
         assertThrows(IllegalArgumentException.class, () -> tool.buildCommand("start", args("comment", "$(id)")));
         assertThrows(IllegalArgumentException.class, () -> tool.buildCommand("stop", args("comment", "x$(id)")));
+        assertThrows(IllegalArgumentException.class,
+                () -> tool.buildCommand("start", args("timeoutSeconds", "30")));
+        assertThrows(IllegalArgumentException.class,
+                () -> tool.buildCommand("start", args("ignoreSleeping", "true")));
+    }
+
+    @Test
+    void catastrophicThreadRegexIsRejectedBeforeDispatch() {
+        assertThrows(IllegalArgumentException.class, () -> tool.buildCommand("start", args(
+                "thread", "(a+)+", "threadRegex", true)));
+        assertThrows(IllegalArgumentException.class, () -> tool.buildCommand("start", args(
+                "thread", "(a|aa)+", "threadRegex", true)));
+
+        assertEquals("spark profiler start --thread \"Server.*\" --regex --save-to-file",
+                tool.buildCommand("start", args("thread", "Server.*", "threadRegex", true)));
+        // The same text is harmless when it is a literal thread name rather than a regex.
+        assertEquals("spark profiler start --thread \"(a+)+\" --save-to-file",
+                tool.buildCommand("start", args("thread", "(a+)+")));
     }
 
     @Test
@@ -116,6 +137,80 @@ class SparkProfilerToolTest {
 
         ToolResult badComment = tool.execute(context(args("action", "stop", "comment", "$(id)")));
         assertFalse(badComment.success());
+    }
+
+    @Test
+    void repeatedStartsAreRateLimited() {
+        List<String> dispatched = new ArrayList<>();
+        SparkProfilerTool gated = recordingTool(dispatched);
+
+        ToolResult first = gated.execute(context(args("action", "start")));
+        assertTrue(first.success(), String.valueOf(first.error()));
+
+        ToolResult second = gated.execute(context(args("action", "start")));
+        assertFalse(second.success());
+        assertTrue(Objects.requireNonNull(second.error()).contains("rate limited"), second.error());
+        assertEquals(List.of("spark profiler start --save-to-file"), dispatched);
+    }
+
+    @Test
+    void onlyOneProfilerSessionCanBeActive() throws Exception {
+        List<String> dispatched = new ArrayList<>();
+        SparkProfilerTool gated = recordingTool(dispatched);
+        assertTrue(gated.execute(context(args("action", "start"))).success());
+
+        // Bypass the interval so only the active-session guard can reject the second start.
+        Field lastStart = SparkProfilerTool.class.getDeclaredField("lastStartNanos");
+        lastStart.setAccessible(true);
+        lastStart.set(gated, null);
+
+        ToolResult second = gated.execute(context(args("action", "start")));
+        assertFalse(second.success());
+        assertTrue(Objects.requireNonNull(second.error()).contains("already active"), second.error());
+        assertEquals(1, dispatched.size());
+
+        assertTrue(gated.execute(context(args("action", "stop"))).success());
+        assertTrue(gated.execute(context(args("action", "start"))).success(),
+                "stop releases the active session");
+        assertEquals(3, dispatched.size());
+    }
+
+    @Test
+    void cancelReleasesActiveSession() throws Exception {
+        List<String> dispatched = new ArrayList<>();
+        SparkProfilerTool gated = recordingTool(dispatched);
+        assertTrue(gated.execute(context(args("action", "start"))).success());
+        assertTrue(gated.execute(context(args("action", "cancel"))).success());
+
+        Field lastStart = SparkProfilerTool.class.getDeclaredField("lastStartNanos");
+        lastStart.setAccessible(true);
+        lastStart.set(gated, null);
+
+        assertTrue(gated.execute(context(args("action", "start"))).success());
+        assertEquals(3, dispatched.size());
+    }
+
+    @Test
+    void resultNotesLocalOnlyStorageAndDiskUsage() {
+        ToolResult result = recordingTool(new ArrayList<>()).execute(context(args("action", "start")));
+        Map<String, Object> out = content(result);
+        assertEquals("local-only", out.get("storage"));
+        String note = String.valueOf(out.get("storageNote"));
+        assertTrue(note.contains("local") && note.contains("disk"), note);
+    }
+
+    @SuppressWarnings("unused")
+    private static SparkProfilerTool recordingTool(List<String> dispatched) {
+        return new SparkProfilerTool((command, action, context) -> {
+            dispatched.add(command);
+            return new SparkCommandRunner.Result(command, true, List.of("ok"), false);
+        }, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> content(ToolResult result) {
+        assertTrue(result.success(), String.valueOf(result.error()));
+        return (Map<String, Object>) Objects.requireNonNull(result.content());
     }
 
     private static ToolContext context(Map<String, Object> arguments) {

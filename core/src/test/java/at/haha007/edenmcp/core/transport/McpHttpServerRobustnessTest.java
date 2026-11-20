@@ -24,15 +24,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
@@ -122,6 +127,14 @@ class McpHttpServerRobustnessTest {
         req.addProperty("id", 1);
         req.addProperty("method", method);
         req.add("params", params);
+        return postRaw(req.toString(), sessionId);
+    }
+
+    private Resp postRaw(String body) throws Exception {
+        return postRaw(body, null);
+    }
+
+    private Resp postRaw(String body, String sessionId) throws Exception {
         HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/mcp")
                 .toURL().openConnection();
         c.setRequestMethod("POST");
@@ -132,7 +145,7 @@ class McpHttpServerRobustnessTest {
         c.setRequestProperty("Authorization", "Bearer " + key);
         if (sessionId != null) c.setRequestProperty("Mcp-Session-Id", sessionId);
         try (OutputStream os = c.getOutputStream()) {
-            os.write(req.toString().getBytes(StandardCharsets.UTF_8));
+            os.write(body.getBytes(StandardCharsets.UTF_8));
         }
         int status = c.getResponseCode();
         var stream = status < 400 ? c.getInputStream() : c.getErrorStream();
@@ -177,6 +190,18 @@ class McpHttpServerRobustnessTest {
             @Override public List<String> tags() { return List.of("test"); }
             @Override public Map<String, Object> inputSchema() { return Map.of(); }
             @Override public ToolResult execute(ToolContext context) { return result; }
+        };
+    }
+
+    private static McpTool throwingTool(String name) {
+        return new McpTool() {
+            @Override public String name() { return name; }
+            @Override public String description() { return "failing test tool"; }
+            @Override public CapabilityLevel level() { return CapabilityLevel.SAFE_READ; }
+            @Override public SideEffects sideEffects() { return SideEffects.NONE; }
+            @Override public List<String> tags() { return List.of("test"); }
+            @Override public Map<String, Object> inputSchema() { return Map.of(); }
+            @Override public ToolResult execute(ToolContext context) { throw new IllegalStateException("boom"); }
         };
     }
 
@@ -315,12 +340,156 @@ class McpHttpServerRobustnessTest {
         YamlConfiguration custom = new YamlConfiguration();
         custom.set("mcp.transport.max-response-chars", 1234);
         custom.set("mcp.transport.call-timeout-seconds", 7);
+        custom.set("mcp.transport.max-json-depth", 100);
         EdenConfig parsed = EdenConfig.from(custom, logger);
         assertEquals(1234, parsed.transport().maxResponseChars());
         assertEquals(7, parsed.transport().callTimeoutSeconds());
+        assertEquals(100, parsed.transport().maxJsonDepth());
 
         EdenConfig defaults = EdenConfig.from(new YamlConfiguration(), logger);
         assertEquals(1_000_000, defaults.transport().maxResponseChars());
         assertEquals(30, defaults.transport().callTimeoutSeconds());
+        assertEquals(64, defaults.transport().maxJsonDepth());
+
+        custom.set("mcp.transport.max-json-depth", 2);
+        assertEquals(8, EdenConfig.from(custom, logger).transport().maxJsonDepth(),
+                "max-json-depth has a floor of 8");
+    }
+
+    @Test
+    void deeplyNestedRequestIsRejectedWith400() throws Exception {
+        start(1_000_000, 30);
+        String nested = "[".repeat(100) + "[]" + "]".repeat(100);
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":" + nested + "}";
+
+        Resp resp = postRaw(body);
+        assertEquals(400, resp.status(), resp.raw());
+        assertEquals(-32600, resp.body().getAsJsonObject("error").get("code").getAsInt());
+
+        Resp ping = post("ping", new JsonObject(), null);
+        assertFalse(ping.body().has("error"), "transport must stay usable: " + ping.raw());
+    }
+
+    @Test
+    void stackOverflowProneRequestReturnsClean400AndServerSurvives() throws Exception {
+        start(1_000_000, 30);
+        // GSON's recursive parser overflows the stack long before this depth; if the JVM stack
+        // is unusually large the iterative depth check rejects it anyway.
+        String nested = "[".repeat(50_000) + "]".repeat(50_000);
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":" + nested + "}";
+
+        Resp resp = postRaw(body);
+        assertEquals(400, resp.status(), resp.raw());
+        assertEquals(-32600, resp.body().getAsJsonObject("error").get("code").getAsInt());
+
+        Resp ping = post("ping", new JsonObject(), null);
+        assertFalse(ping.body().has("error"), "server must recover after StackOverflowError: " + ping.raw());
+    }
+
+    @Test
+    void protocolStringFieldsAreNotCoerced() throws Exception {
+        start(1_000_000, 30);
+        AtomicInteger invocations = new AtomicInteger();
+        tools.register(new McpTool() {
+            @Override public String name() { return "123"; }
+            @Override public String description() { return "numeric name tool"; }
+            @Override public CapabilityLevel level() { return CapabilityLevel.SAFE_READ; }
+            @Override public SideEffects sideEffects() { return SideEffects.NONE; }
+            @Override public List<String> tags() { return List.of("test"); }
+            @Override public Map<String, Object> inputSchema() { return Map.of(); }
+            @Override public ToolResult execute(ToolContext context) {
+                invocations.incrementAndGet();
+                return ToolResult.ok("called");
+            }
+        });
+
+        JsonObject toolParams = new JsonObject();
+        toolParams.addProperty("name", 123);
+        toolParams.add("arguments", new JsonObject());
+        Resp numericName = post("tools/call", toolParams, session);
+        assertEquals(0, invocations.get(), "a JSON number must not become the tool name '123'");
+        assertTrue(toolResult(numericName).get("isError").getAsBoolean(), numericName.raw());
+        assertTrue(toolText(numericName).contains("Missing tool name"), numericName.raw());
+
+        JsonObject methodReq = new JsonObject();
+        methodReq.addProperty("jsonrpc", "2.0");
+        methodReq.addProperty("id", 1);
+        methodReq.addProperty("method", 42);
+        Resp numericMethod = postRaw(methodReq.toString());
+        assertEquals(-32600, numericMethod.body().getAsJsonObject("error").get("code").getAsInt(),
+                numericMethod.raw());
+
+        JsonObject arrayMethodReq = new JsonObject();
+        arrayMethodReq.addProperty("jsonrpc", "2.0");
+        arrayMethodReq.addProperty("id", 1);
+        arrayMethodReq.add("method", new com.google.gson.JsonArray());
+        Resp arrayMethod = postRaw(arrayMethodReq.toString());
+        assertEquals(-32600, arrayMethod.body().getAsJsonObject("error").get("code").getAsInt(),
+                arrayMethod.raw());
+
+        JsonObject uriParams = new JsonObject();
+        uriParams.addProperty("uri", 7);
+        Resp numericUri = post("resources/read", uriParams, session);
+        assertEquals(-32602, numericUri.body().getAsJsonObject("error").get("code").getAsInt(),
+                numericUri.raw());
+    }
+
+    @Test
+    void failingToolNameCannotForgeAuditLines() throws Exception {
+        start(1_000_000, 30);
+        String evilName = "evil\n[AUDIT] forged success=true";
+        tools.register(throwingTool(evilName));
+
+        Resp resp = callTool(evilName);
+        assertTrue(toolResult(resp).get("isError").getAsBoolean(), resp.raw());
+        assertTrue(logMessages.stream().noneMatch(m -> m.contains("\n") || m.contains("\r")),
+                "no log line may contain a newline: " + logMessages);
+        assertTrue(logMessages.stream().noneMatch(m -> m.startsWith("[AUDIT] forged")),
+                "tool name must not inject a fake audit record: " + logMessages);
+        assertTrue(logMessages.stream().anyMatch(m -> m.contains("Tool execution failed: evil [AUDIT] forged success=true")),
+                "sanitized name should still be visible: " + logMessages);
+    }
+
+    @Test
+    void partialAuthFailureRecordIsEvictedWhenIdle() throws Exception {
+        start(1_000_000, 30);
+        assertEquals(401, badAuthRequest());
+
+        Field failuresField = McpHttpServer.class.getDeclaredField("failures");
+        failuresField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> failures = (Map<String, Object>) failuresField.get(server);
+        assertEquals(1, failures.size(), "a single auth failure creates a partial record");
+        Object record = failures.values().iterator().next();
+        Field lastSeen = record.getClass().getDeclaredField("lastSeen");
+        lastSeen.setAccessible(true);
+        lastSeen.setLong(record, System.currentTimeMillis() - 200_000L);
+
+        Method prune = McpHttpServer.class.getDeclaredMethod("pruneFailures");
+        prune.setAccessible(true);
+        prune.invoke(server);
+        assertTrue(failures.isEmpty(), "a partial-failure record must expire when idle");
+    }
+
+    private int badAuthRequest() throws Exception {
+        HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/mcp")
+                .toURL().openConnection();
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setRequestProperty("Authorization", "Bearer " + "f".repeat(64));
+        try (OutputStream os = c.getOutputStream()) {
+            os.write("{}".getBytes(StandardCharsets.UTF_8));
+        }
+        int status = c.getResponseCode();
+        c.disconnect();
+        return status;
+    }
+
+    @Test
+    void processOutputCaptureIsBounded() throws Exception {
+        byte[] huge = new byte[200_000];
+        Arrays.fill(huge, (byte) 'x');
+        String out = McpHttpServer.readBoundedProcessOutput(new ByteArrayInputStream(huge), 64 * 1024);
+        assertEquals(64 * 1024, out.length());
     }
 }

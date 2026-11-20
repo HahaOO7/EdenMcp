@@ -60,6 +60,7 @@ class LogsToolTest {
         assertEquals("gzip", out.get("compression"));
         assertEquals(3, out.get("count"));
         assertEquals(java.util.List.of("one", "two", "three"), out.get("lines"));
+        assertEquals(false, out.get("truncated"));
     }
 
     @Test
@@ -85,6 +86,10 @@ class LogsToolTest {
         assertFalse(tool.execute(context("file", "../secret.txt")).success());
         assertFalse(tool.execute(context("file", 42)).success());
         assertFalse(tool.execute(context("limit", "abc")).success());
+        // JSON types are strict: numeric strings and string booleans are no longer coerced.
+        assertFalse(tool.execute(context("limit", "5")).success());
+        assertFalse(tool.execute(context("limit", 2.5d)).success());
+        assertFalse(tool.execute(context("regex", "true")).success());
     }
 
     @Test
@@ -190,5 +195,43 @@ class LogsToolTest {
         assertThrows(IOException.class, () -> access.resolve("../escape"));
         assertThrows(IOException.class, () -> access.resolve("sub/file.log"));
         assertThrows(IOException.class, () -> access.resolve(".."));
+    }
+
+    @Test
+    void symlinkedLogsRootResolvesFiles() throws Exception {
+        Path real = Files.createDirectories(tempDir.resolve("real-logs"));
+        Path link = tempDir.resolve("logs");
+        try {
+            Files.createSymbolicLink(link, real);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException e) {
+            return; // Symbolic links are not available on every platform.
+        }
+        Files.writeString(real.resolve("latest.log"), "symlink-line\n");
+        LogsReadTool tool = new LogsReadTool(link, false, EdenConfig.ToolConfig.defaults());
+
+        Map<String, Object> out = content(tool.execute(context()));
+        assertEquals(java.util.List.of("symlink-line"), out.get("lines"));
+        assertEquals(false, out.get("truncated"));
+    }
+
+    @Test
+    void compressedTailOnlyDecodesLastWindow() throws Exception {
+        Path gz = tempDir.resolve("tail.gz");
+        StringBuilder content = new StringBuilder();
+        for (int i = 0; i < 200; i++) {
+            content.append("zeile-").append(String.format("%03d", i)).append("-ä\n");
+        }
+        try (GZIPOutputStream os = new GZIPOutputStream(Files.newOutputStream(gz))) {
+            os.write(content.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        EdenConfig.ToolConfig bounded = new EdenConfig.ToolConfig(
+                250, 5, 10, 100, 500, 200, 200, 100_000,
+                1024 * 1024, 1024 * 1024, 500, 10, 200);
+        LogsReadTool tool = new LogsReadTool(tempDir, false, bounded);
+
+        Map<String, Object> out = content(tool.execute(context("file", "tail.gz", "limit", 5)));
+        assertEquals(true, out.get("truncated"));
+        assertEquals(java.util.List.of("zeile-195-ä", "zeile-196-ä", "zeile-197-ä",
+                "zeile-198-ä", "zeile-199-ä"), out.get("lines"));
     }
 }

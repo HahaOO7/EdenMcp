@@ -65,6 +65,7 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `mcp.transport` | HTTP worker pool, SSE keepalive, session pruning, CORS age, request buffer and shutdown grace |
 | `mcp.transport.max-response-chars` | Maximum serialized JSON response size (default `1000000`, minimum `512`); oversized tool/resource payloads are trimmed to valid JSON with `truncated`/`omittedCount`, and oversized strings end in `[truncated]`. JSON-RPC batches drop whole responses and append an explicit truncation error entry. |
 | `mcp.transport.call-timeout-seconds` | Deadline for each tool execution and resource read (default `30`, minimum `1`); timed-out calls return a clean error and are audited as `timeout` instead of tying up an HTTP worker |
+| `mcp.transport.max-json-depth` | Maximum nesting of JSON objects/arrays in a request (default `64`, minimum `8`); deeper trees, trees with excessive keys, and stack-overflow-prone input are rejected with HTTP 400 / JSON-RPC `-32600` |
 | `mcp.transport.tls` | TLS mode, custom keystore, optional mTLS, generated key size/validity |
 | `mcp.auth` | Failure throttling, key rotation grace period, extra key files |
 | `mcp.policy.allow-unsafe-at-runtime` | Set `false` to require the console for escalation to `unsafe` |
@@ -76,7 +77,7 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `audit.max-value-length` | Truncation length for sanitized audit values (default `200`) |
 | `hooks.luckperms.enabled` | Enable the LuckPerms hook |
 | `hooks.spark.enabled` | Enable the Spark profiling hook (Paper ships Spark) |
-| `commands.classification` | Ordered regex rules that reclassify specific console commands |
+| `commands.classification` | Ordered regex rules that reclassify specific console commands; patterns with nested quantifiers or quantified alternation are rejected at config parse time to prevent catastrophic backtracking |
 | `audit` | Tool-call/mode-change logging and optional verbose logging |
 
 Tool results, resource contents, and whole JSON-RPC batches are bounded by `mcp.transport.max-response-chars`; truncation is always applied to whole JSON values (or string prefixes with a `[truncated]` marker), so clients never receive malformed JSON. Tools and resource readers execute on a dedicated virtual-thread executor with a `mcp.transport.call-timeout-seconds` deadline; an expired call is cancelled, reported as an error result (`timeout` in the audit log), and can no longer hold the HTTP worker.

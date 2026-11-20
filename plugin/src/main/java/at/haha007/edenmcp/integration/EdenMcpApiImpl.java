@@ -11,6 +11,7 @@ import at.haha007.edenmcp.api.HookRegistrationException;
 import at.haha007.edenmcp.api.McpResource;
 import at.haha007.edenmcp.api.McpTool;
 import at.haha007.edenmcp.api.Registration;
+import at.haha007.edenmcp.api.SideEffects;
 import at.haha007.edenmcp.api.ToolContext;
 import at.haha007.edenmcp.api.ToolResult;
 import at.haha007.edenmcp.core.config.EdenConfig;
@@ -194,15 +195,35 @@ public final class EdenMcpApiImpl implements EdenMcpApi {
         return s.isEmpty() ? "tool" : s;
     }
 
-    private static McpTool prefixed(McpTool delegate, String prefix) {
+    /**
+     * Wraps a third-party tool under a server-assigned prefix. Metadata is untrusted:
+     * nulls are normalized so mode gating and {@code tools/list} serialization stay valid.
+     * Server-authoritative capability caps still apply via the hook policy.
+     */
+    static McpTool prefixed(McpTool delegate, String prefix) {
         String localName = sanitizeToolName(delegate.name());
         return new McpTool() {
             @Override public String name() { return prefix + localName; }
-            @Override public String description() { return delegate.description(); }
-            @Override public CapabilityLevel level() { return delegate.level(); }
-            @Override public at.haha007.edenmcp.api.SideEffects sideEffects() { return delegate.sideEffects(); }
-            @Override public List<String> tags() { return delegate.tags(); }
-            @Override public Map<String, Object> inputSchema() { return delegate.inputSchema(); }
+            @Override public String description() {
+                String value = delegate.description();
+                return value == null ? "" : value;
+            }
+            @Override public CapabilityLevel level() {
+                CapabilityLevel value = delegate.level();
+                return value == null ? CapabilityLevel.SAFE_READ : value;
+            }
+            @Override public SideEffects sideEffects() {
+                SideEffects value = delegate.sideEffects();
+                return value == null ? SideEffects.NONE : value;
+            }
+            @Override public List<String> tags() {
+                List<String> value = delegate.tags();
+                return value == null ? List.of() : value;
+            }
+            @Override public Map<String, Object> inputSchema() {
+                Map<String, Object> value = delegate.inputSchema();
+                return value == null ? Map.of("type", "object", "properties", Map.of()) : value;
+            }
             @Override public ToolResult execute(ToolContext context) throws Exception { return delegate.execute(context); }
             @Override public boolean exposed() { return delegate.exposed(); }
         };

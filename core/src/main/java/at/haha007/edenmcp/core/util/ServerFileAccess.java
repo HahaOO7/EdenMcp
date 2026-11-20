@@ -1,5 +1,6 @@
 package at.haha007.edenmcp.core.util;
 
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -21,12 +22,15 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
@@ -50,8 +54,14 @@ public final class ServerFileAccess {
     /** A single entry returned by a directory listing. */
     public record FileEntry(String name, String path, String type, long size) {}
 
-    /** A listing result that reports whether the configured limits hid further entries. */
-    public record Listing(List<FileEntry> entries, boolean truncated) {}
+    /**
+     * A listing result that reports whether the configured limits hid further entries.
+     *
+     * @param total the total number of matching entries, including those not returned
+     */
+    public record Listing(List<FileEntry> entries, int total, boolean truncated) {
+        public boolean hasMore() { return truncated; }
+    }
 
     private final Path root;
     private final Path realRoot;
@@ -81,7 +91,7 @@ public final class ServerFileAccess {
                         @Nullable String glob) throws IOException {
         if (maxEntries < 1) throw new IOException("Invalid entry limit");
         if (maxDepth < 1) throw new IOException("Depth must be at least 1");
-        Path directory = resolve(rawPath, true);
+        Path directory = resolveValidated(rawPath, true).path();
         if (!Files.isDirectory(directory)) throw new IOException("Path is not a directory: " + rawPath);
 
         PathMatcher matcher = null;
@@ -93,54 +103,64 @@ public final class ServerFileAccess {
             }
         }
 
-        boolean[] truncated = {false};
         List<FileEntry> entries = new ArrayList<>();
+        int total;
         if (recursive) {
-            walk(directory, maxDepth, matcher, maxEntries, entries, truncated);
+            int[] count = {0};
+            walk(directory, maxDepth, matcher, maxEntries, entries, count);
+            total = count[0];
         } else {
+            // Keep only the maxEntries lexicographically smallest paths instead of
+            // materializing and sorting every child of the directory.
+            Comparator<FileEntry> byPath = Comparator.comparing(FileEntry::path);
+            PriorityQueue<FileEntry> top = new PriorityQueue<>(byPath.reversed());
+            int count = 0;
             try (Stream<Path> children = Files.list(directory)) {
-                List<Path> sorted = children.sorted(Comparator.comparing(p -> p.getFileName().toString())).toList();
-                for (Path child : sorted) {
+                for (Iterator<Path> it = children.iterator(); it.hasNext(); ) {
+                    Path child = it.next();
                     if (!matches(matcher, child)) continue;
-                    if (entries.size() >= maxEntries) {
-                        truncated[0] = true;
-                        break;
+                    count++;
+                    String path = displayPath(child);
+                    if (top.size() < maxEntries) {
+                        top.add(describe(child, path));
+                    } else if (path.compareTo(top.peek().path()) < 0) {
+                        top.poll();
+                        top.add(describe(child, path));
                     }
-                    entries.add(describe(child));
                 }
             }
+            total = count;
+            entries.addAll(top);
         }
         entries.sort(Comparator.comparing(FileEntry::path));
-        return new Listing(List.copyOf(entries), truncated[0]);
+        return new Listing(List.copyOf(entries), total, total > entries.size());
     }
 
     private void walk(Path directory, int maxDepth, @Nullable PathMatcher matcher, int maxEntries,
-                      List<FileEntry> entries, boolean[] truncated) throws IOException {
+                      List<FileEntry> entries, int[] total) throws IOException {
+        // Walk to completion even after maxEntries is reached: `total` must count every match.
         Files.walkFileTree(directory, Set.of(), maxDepth, new SimpleFileVisitor<>() {
             @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                if (dir.equals(directory)) return FileVisitResult.CONTINUE;
-                return add(dir) ? FileVisitResult.CONTINUE : FileVisitResult.TERMINATE;
+            public @NotNull FileVisitResult preVisitDirectory(@NotNull Path dir, @NotNull BasicFileAttributes attrs) {
+                if (!dir.equals(directory)) add(dir);
+                return FileVisitResult.CONTINUE;
             }
 
             @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                return add(file) ? FileVisitResult.CONTINUE : FileVisitResult.TERMINATE;
+            public @NotNull FileVisitResult visitFile(@NotNull Path file, @NotNull BasicFileAttributes attrs) {
+                add(file);
+                return FileVisitResult.CONTINUE;
             }
 
             @Override
-            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+            public @NotNull FileVisitResult visitFileFailed(@NotNull Path file, @NotNull IOException exc) {
                 return FileVisitResult.CONTINUE; // skip unreadable entries
             }
 
-            private boolean add(Path path) {
-                if (!matches(matcher, path)) return true;
-                if (entries.size() >= maxEntries) {
-                    truncated[0] = true;
-                    return false;
-                }
-                entries.add(describe(path));
-                return true;
+            private void add(Path path) {
+                if (!matches(matcher, path)) return;
+                total[0]++;
+                if (entries.size() < maxEntries) entries.add(describe(path));
             }
         });
     }
@@ -150,13 +170,17 @@ public final class ServerFileAccess {
     }
 
     private FileEntry describe(Path child) {
+        return describe(child, displayPath(child));
+    }
+
+    private FileEntry describe(Path child, String path) {
         String type;
         if (Files.isSymbolicLink(child)) type = "symlink";
         else if (Files.isDirectory(child)) type = "directory";
         else if (Files.isRegularFile(child)) type = "file";
         else type = "other";
         long size = (type.equals("file")) ? sizeOf(child) : 0;
-        return new FileEntry(child.getFileName().toString(), displayPath(child), type, size);
+        return new FileEntry(child.getFileName().toString(), path, type, size);
     }
 
     private static long sizeOf(Path file) {
@@ -182,10 +206,11 @@ public final class ServerFileAccess {
         if (maxBytes < 1) throw new IOException("Invalid read limit");
         if (offset < 0) throw new IOException("offset must not be negative");
         if (limit < 1) throw new IOException("limit must be at least 1");
-        Path file = resolve(rawPath);
-        if (!Files.isRegularFile(file)) throw new IOException("Path is not a regular file: " + rawPath);
+        ResolvedPath validated = resolveValidated(rawPath, false);
+        Path file = validated.path();
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Path is not a regular file: " + rawPath);
 
-        byte[] bytes = readBounded(file, maxBytes);
+        byte[] bytes = readBounded(validated, maxBytes);
         for (byte b : bytes) {
             if (b == 0) throw new IOException("File does not appear to be text (contains NUL bytes)");
         }
@@ -200,11 +225,17 @@ public final class ServerFileAccess {
     }
 
     /** Reads at most {@code maxBytes + 1} bytes so a file growing mid-read cannot bypass the cap. */
-    private static byte[] readBounded(Path file, int maxBytes) throws IOException {
-        int toRead = maxBytes == Integer.MAX_VALUE ? Integer.MAX_VALUE : maxBytes + 1;
-        try (InputStream in = Files.newInputStream(file)) {
-            byte[] data = in.readNBytes(toRead);
-            if (data.length > maxBytes) {
+    private static byte[] readBounded(ResolvedPath validated, int maxBytes) throws IOException {
+        // Use long arithmetic: maxBytes + 1 overflows when maxBytes == Integer.MAX_VALUE.
+        long toRead = (long) maxBytes + 1;
+        try (InputStream in = Files.newInputStream(validated.path(),
+                StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            // Re-check the validated file's identity while the descriptor is open. This narrows
+            // (but cannot close) the local-actor TOCTOU window between resolve() and use: Java
+            // provides no portable way to pin an open handle to a validated path.
+            verifyUnchanged(validated);
+            byte[] data = in.readNBytes((int) Math.min(toRead, Integer.MAX_VALUE));
+            if (data.length > maxBytes || (data.length == Integer.MAX_VALUE && in.read() != -1)) {
                 throw new IOException("File is too large to read (max " + maxBytes + " bytes)");
             }
             return data;
@@ -247,12 +278,13 @@ public final class ServerFileAccess {
         for (byte b : bytes) {
             if (b == 0) throw new IOException("Content does not appear to be text (contains NUL bytes)");
         }
-        Path file = resolve(rawPath);
-        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(file)) {
+        ResolvedPath validated = resolveValidated(rawPath, false);
+        Path file = validated.path();
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Path is not a regular file: " + rawPath);
         }
         Path parent = file.getParent();
-        if (parent == null || !Files.isDirectory(parent)) {
+        if (parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Parent directory does not exist: " + rawPath);
         }
 
@@ -261,6 +293,10 @@ public final class ServerFileAccess {
         try {
             Files.write(temp, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
             copyPosixPermissions(file, temp);
+            // Re-verify the anchor validated by resolve() before replacing the target.
+            // Together with NOFOLLOW_LINKS this narrows the local-actor TOCTOU window;
+            // Java cannot fully eliminate it (see resolveValidated).
+            verifyUnchanged(validated);
             try {
                 Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException e) {
@@ -276,7 +312,8 @@ public final class ServerFileAccess {
     private static void copyPosixPermissions(Path original, Path temp) {
         if (!Files.exists(original, LinkOption.NOFOLLOW_LINKS)) return;
         try {
-            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(original);
+            Set<PosixFilePermission> permissions = Files.readAttributes(original, PosixFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS).permissions();
             Files.setPosixFilePermissions(temp, permissions);
         } catch (UnsupportedOperationException | IOException ignored) {
             // Non-POSIX filesystem: keep the temp file's secure default permissions.
@@ -289,12 +326,21 @@ public final class ServerFileAccess {
      * existing component (including the target itself) must resolve inside the root.
      */
     public Path resolve(String rawPath) throws IOException {
-        return resolve(rawPath, false);
+        return resolveValidated(rawPath, false).path();
     }
 
-    private Path resolve(String rawPath, boolean allowRoot) throws IOException {
+    /**
+     * Validates a path and captures the identity of its deepest existing component so
+     * callers can re-verify that component after opening an I/O handle.
+     *
+     * <p>Residual risk: a local actor with write access to the server directory can still
+     * mutate a path component between this check and the subsequent OS call. Java has no
+     * portable way to pin an open descriptor to a validated path, so the TOCTOU race can
+     * only be narrowed, not eliminated.
+     */
+    private ResolvedPath resolveValidated(String rawPath, boolean allowRoot) throws IOException {
         if (rawPath == null || rawPath.isBlank()) {
-            if (allowRoot) return realRoot;
+            if (allowRoot) return new ResolvedPath(realRoot, realRoot, fileKeyOf(realRoot));
             throw new IOException("Path is required");
         }
         Path supplied;
@@ -308,7 +354,7 @@ public final class ServerFileAccess {
         }
         Path candidate = root.resolve(supplied).normalize();
         if (candidate.equals(root)) {
-            if (allowRoot) return realRoot;
+            if (allowRoot) return new ResolvedPath(realRoot, realRoot, fileKeyOf(realRoot));
             throw new IOException("Path must be a file inside the server directory");
         }
         if (!candidate.startsWith(root)) {
@@ -334,7 +380,28 @@ public final class ServerFileAccess {
         }
         Path result = realBase;
         while (!missing.isEmpty()) result = result.resolve(missing.pop());
-        return result;
+        return new ResolvedPath(result, realBase, fileKeyOf(realBase));
+    }
+
+    /** A canonical path together with the identity of the component confinement was validated on. */
+    private record ResolvedPath(Path path, Path anchor, @Nullable Object anchorKey) {}
+
+    @Nullable
+    private static Object fileKeyOf(Path path) {
+        try {
+            return Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey();
+        } catch (IOException e) {
+            return null; // file keys unsupported: fall back to the other checks
+        }
+    }
+
+    /** Best-effort re-check of the validated component while the caller holds an I/O handle. */
+    private static void verifyUnchanged(ResolvedPath validated) throws IOException {
+        if (validated.anchorKey() == null) return;
+        Object current = fileKeyOf(validated.anchor());
+        if (current != null && !validated.anchorKey().equals(current)) {
+            throw new IOException("File changed while being accessed");
+        }
     }
 
     private String displayPath(Path file) {

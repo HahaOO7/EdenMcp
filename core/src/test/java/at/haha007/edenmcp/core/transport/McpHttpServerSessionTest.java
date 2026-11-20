@@ -143,6 +143,24 @@ class McpHttpServerSessionTest {
     }
 
     @Test
+    void nullPrincipalInvalidatesEverySession() throws Exception {
+        Resp first = post(rpc(20, "initialize"), key, null);
+        Resp second = post(rpc(21, "initialize"), key, null);
+        String id1 = first.sessionHeader();
+        String id2 = second.sessionHeader();
+        assertNotNull(id1);
+        assertNotNull(id2);
+        assertNotEquals(id1, id2);
+        assertEquals(2, server.activeSessions());
+
+        assertEquals(2, server.invalidateSessionsForPrincipal(null),
+                "null must mean all principals, not 'no-op'");
+        assertEquals(0, server.activeSessions());
+        assertTrue(post(rpc(22, "tools/list"), key, id1).body().has("error"));
+        assertTrue(post(rpc(23, "tools/list"), key, id2).body().has("error"));
+    }
+
+    @Test
     void rotationClosesSseStreamsOfInvalidatedPrincipal() throws Exception {
         try (Socket s = new Socket("127.0.0.1", server.port())) {
             s.setSoTimeout(4000);

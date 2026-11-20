@@ -56,6 +56,28 @@ class ProtobufInspectorTest {
         assertEquals(data.length, result.bytesInspected());
     }
 
+    @Test
+    void outputTreeIsBoundedBySerializedSizeAndReportsOmittedNodes() {
+        // 1000 top-level varint fields; far more serialized text than the 2000-char cap allows.
+        byte[] data = new byte[2000];
+        for (int i = 0; i < 1000; i++) {
+            data[i * 2] = 0x08;
+            data[i * 2 + 1] = 0x01;
+        }
+
+        ProtobufInspector.Result bounded = ProtobufInspector.inspect(data, 4, 5000, 10000, 2000);
+        String rendered = bounded.tree().toString();
+        assertFalse(rendered.isEmpty(), rendered);
+        assertTrue(rendered.length() <= 2000, rendered.length() + " chars");
+        assertTrue(bounded.omittedNodes() > 0, rendered);
+        assertTrue(bounded.truncated());
+        assertEquals(1000, bounded.summary().get("topLevelFields"), "summary still describes the full parse");
+
+        ProtobufInspector.Result full = ProtobufInspector.inspect(data, 4, 5000, 10000);
+        assertEquals(0, full.omittedNodes());
+        assertFalse(full.truncated());
+    }
+
     private static byte[] varint(int value) {
         List<Byte> bytes = new ArrayList<>();
         int remaining = value;

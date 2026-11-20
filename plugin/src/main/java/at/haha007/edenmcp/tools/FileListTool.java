@@ -74,6 +74,7 @@ public final class FileListTool implements McpTool {
             ServerFileAccess.Listing listing = files.list(path, maxEntries, recursive, depth, pattern);
             return ToolResult.ok(Map.of("path", path.isBlank() ? "." : path,
                     "entries", listing.entries(), "count", listing.entries().size(),
+                    "total", listing.total(), "hasMore", listing.hasMore(),
                     "truncated", listing.truncated(), "recursive", recursive, "depth", depth));
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());

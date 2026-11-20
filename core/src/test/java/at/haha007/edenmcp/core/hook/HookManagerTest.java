@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -272,5 +273,67 @@ class HookManagerTest {
 
         assertTrue(registry.all().isEmpty());
         assertEquals(List.of("edenmcp.wrong.tool"), manager.hookInfos().getFirst().skipped());
+    }
+
+    @Test
+    void describeHooksBoundsNestedArraysAndReportsTruncation() {
+        List<McpTool> manyTools = IntStream.range(0, 250)
+                .mapToObj(i -> tool("edenmcp.big.tool" + i)).toList();
+        List<McpResource> manyResources = IntStream.range(0, 150)
+                .mapToObj(i -> resource("edenmcp://big/" + i)).toList();
+        manager.registerKnownHook(hook("big", HookContribution.of(manyTools, manyResources)), true);
+
+        manager.enableAvailableHooks(null);
+
+        Map<String, Object> described = describeFirstHook();
+        @SuppressWarnings("unchecked")
+        List<String> tools = (List<String>) described.get("tools");
+        @SuppressWarnings("unchecked")
+        List<String> resources = (List<String>) described.get("resources");
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, tools.size());
+        assertEquals("edenmcp.big.tool0", tools.getFirst());
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, described.get("toolsCount"));
+        assertEquals(250, described.get("toolsTotal"));
+        assertEquals(true, described.get("toolsHasMore"));
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, resources.size());
+        assertEquals("edenmcp://big/0", resources.getFirst());
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, described.get("resourcesCount"));
+        assertEquals(150, described.get("resourcesTotal"));
+        assertEquals(true, described.get("resourcesHasMore"));
+        assertEquals(List.of(), described.get("skipped"));
+        assertEquals(0, described.get("skippedCount"));
+        assertEquals(0, described.get("skippedTotal"));
+        assertEquals(false, described.get("skippedHasMore"));
+
+        // Callers may request a tighter cap than the hard limit.
+        Map<String, Object> tighter = manager.describeHooks(5).getFirst();
+        assertEquals(5, ((List<?>) tighter.get("tools")).size());
+        assertEquals(true, tighter.get("toolsHasMore"));
+        assertEquals(250, tighter.get("toolsTotal"));
+    }
+
+    @Test
+    void describeHooksBoundsSkippedNames() {
+        List<McpTool> rejected = IntStream.range(0, 160)
+                .mapToObj(i -> tool("edenmcp.rejected.tool" + i)).toList();
+        var policy = HookManager.HookPolicy.builtin(true).withLimits(true,
+                CapabilityLevel.UNSAFE_ACTION, true, Objects::isNull, Objects::nonNull);
+        manager.register(null, hook("skipped", HookContribution.of(rejected, List.of())), policy, "test");
+
+        manager.enableAvailableHooks(null);
+
+        Map<String, Object> described = describeFirstHook();
+        @SuppressWarnings("unchecked")
+        List<String> skipped = (List<String>) described.get("skipped");
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, skipped.size());
+        assertEquals("edenmcp.rejected.tool0", skipped.getFirst());
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS, described.get("skippedCount"));
+        assertEquals(160, described.get("skippedTotal"));
+        assertEquals(true, described.get("skippedHasMore"));
+        // Descriptors describe the raw contribution; skipped names are reported separately.
+        assertEquals(HookManager.MAX_DESCRIBED_LIST_ITEMS,
+                ((List<?>) described.get("tools")).size());
+        assertEquals(160, described.get("toolsTotal"));
+        assertEquals(true, described.get("toolsHasMore"));
     }
 }

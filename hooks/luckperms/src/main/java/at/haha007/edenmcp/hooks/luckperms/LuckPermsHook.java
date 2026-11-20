@@ -11,11 +11,15 @@ import at.haha007.edenmcp.api.ToolContext;
 import at.haha007.edenmcp.api.ToolResult;
 import net.luckperms.api.LuckPerms;
 import net.luckperms.api.actionlog.Action;
+import net.luckperms.api.actionlog.ActionLog;
 import net.luckperms.api.model.group.Group;
 import net.luckperms.api.model.user.User;
 import net.luckperms.api.node.Node;
 import net.luckperms.api.node.NodeType;
 import net.luckperms.api.node.types.InheritanceNode;
+import net.luckperms.api.node.types.MetaNode;
+import net.luckperms.api.node.types.PrefixNode;
+import net.luckperms.api.node.types.SuffixNode;
 import net.luckperms.api.query.QueryMode;
 import net.luckperms.api.query.QueryOptions;
 import net.luckperms.api.track.Track;
@@ -23,7 +27,6 @@ import org.bukkit.Server;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -32,6 +35,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 public final class LuckPermsHook implements Hook {
     @Override
@@ -75,9 +79,11 @@ public final class LuckPermsHook implements Hook {
                 "edenmcp://luckperms/groups", "LuckPerms groups",
                 "Loaded LuckPerms groups (JSON, read-only).", "application/json",
                 () -> {
-                    List<String> groups = LpSupport.api().getGroupManager().getLoadedGroups().stream()
+                    List<String> all = LpSupport.api().getGroupManager().getLoadedGroups().stream()
                             .map(Group::getName).sorted().toList();
-                    return Map.of("groups", groups, "count", groups.size());
+                    List<String> groups = LpSupport.limited(all, LpSupport.MAX_LIST);
+                    return Map.of("groups", groups, "count", groups.size(), "total", all.size(),
+                            "hasMore", LpSupport.hasMore(all, LpSupport.MAX_LIST));
                 }));
         return HookContribution.of(tools, resources);
     }
@@ -169,10 +175,7 @@ public final class LuckPermsHook implements Hook {
 
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
-            String permission = LpSupport.requiredArg(args, "permission");
-            if (permission.length() > 256) {
-                throw new LpSupport.InvalidArgument("permission is too long");
-            }
+            String permission = LpSupport.keyArg(args, "permission");
             User user = LpSupport.requireUser(api, args);
             QueryOptions query = LpSupport.queryOptions(api, user, args);
             var result = user.getCachedData().getPermissionData(query).queryPermission(permission);
@@ -212,7 +215,7 @@ public final class LuckPermsHook implements Hook {
 
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
-            String name = LpSupport.requiredArg(args, "name");
+            String name = LpSupport.nameArg(args, "name");
             int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_NODES, 500);
             Group group = LpSupport.await(api.getGroupManager().loadGroup(name), "loadGroup")
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Group not found"));
@@ -220,9 +223,12 @@ public final class LuckPermsHook implements Hook {
             var meta = group.getCachedData().getMetaData(query);
             OptionalInt weight = group.getWeight();
             Collection<Node> nodes = group.getNodes();
-            List<String> allInherited = group.getInheritedGroups(query).stream()
-                    .map(Group::getName).sorted().distinct().toList();
-            Map<String, List<String>> allMeta = meta.getMeta();
+            LpSupport.Bounded<String> inherited = LpSupport.boundedSorted(
+                    group.getInheritedGroups(query).stream().map(Group::getName), limit);
+            LpSupport.Bounded<Map.Entry<String, List<String>>> metaEntries = LpSupport.boundedFirst(
+                    meta.getMeta().entrySet().stream(), limit);
+            Map<String, List<String>> metaOut = new LinkedHashMap<>();
+            metaEntries.values().forEach(entry -> metaOut.put(entry.getKey(), entry.getValue()));
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("name", group.getName());
@@ -231,10 +237,12 @@ public final class LuckPermsHook implements Hook {
             out.put("nodeCount", nodes.size());
             out.put("nodes", LpSupport.nodeMaps(nodes, limit));
             out.put("nodesTruncated", LpSupport.hasMore(nodes, limit));
-            out.put("inheritedGroups", LpSupport.limited(allInherited, limit));
-            out.put("inheritedTruncated", LpSupport.hasMore(allInherited, limit));
-            out.put("meta", LpSupport.limited(allMeta, limit));
-            out.put("metaTruncated", LpSupport.hasMore(allMeta, limit));
+            out.put("inheritedGroups", inherited.values());
+            out.put("inheritedTruncated", inherited.hasMore());
+            out.put("inheritedTotal", inherited.total());
+            out.put("meta", metaOut);
+            out.put("metaTruncated", metaEntries.hasMore());
+            out.put("metaTotal", metaEntries.total());
             out.put("prefix", meta.getPrefix());
             out.put("suffix", meta.getSuffix());
             return ToolResult.ok(out);
@@ -297,7 +305,7 @@ public final class LuckPermsHook implements Hook {
 
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
-            String name = LpSupport.requiredArg(args, "name");
+            String name = LpSupport.nameArg(args, "name");
             int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_LIST, LpSupport.MAX_LIST);
             Track track = LpSupport.await(api.getTrackManager().loadTrack(name), "loadTrack")
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Track not found"));
@@ -362,9 +370,13 @@ public final class LuckPermsHook implements Hook {
             out.put("username", user.getUsername());
             out.put("primaryGroup", user.getPrimaryGroup());
             out.put("directGroups", LpSupport.limited(allDirect, limit));
+            out.put("directTotal", allDirect.size());
+            out.put("directHasMore", LpSupport.hasMore(allDirect, limit));
             out.put("groups", LpSupport.limited(allEffective, limit));
             out.put("count", Math.min(allEffective.size(), limit));
             out.put("total", allEffective.size());
+            out.put("effectiveTotal", allEffective.size());
+            out.put("effectiveHasMore", LpSupport.hasMore(allEffective, limit));
             out.put("hasMore", LpSupport.hasMore(allEffective, limit) || LpSupport.hasMore(allDirect, limit));
             return ToolResult.ok(out);
         }
@@ -414,32 +426,28 @@ public final class LuckPermsHook implements Hook {
                 }
             }
 
-            List<Action> actions = new ArrayList<>(
-                    LpSupport.await(api.getActionLogger().getLog(), "getAuditLog").getContent());
-            actions.sort(Comparator.comparing(Action::getTimestamp).reversed());
-
-            List<Map<String, Object>> entries = new ArrayList<>();
-            boolean hasMore = false;
-            for (Action action : actions) {
-                if (type != null && action.getTarget().getType() != type) continue;
-                if (since != null && action.getTimestamp().isBefore(since)) continue;
-                if (target != null && !target.isEmpty()) {
-                    String targetName = action.getTarget().getName();
-                    String targetUuid = action.getTarget().getUniqueId().map(UUID::toString).orElse("");
-                    if (!target.equalsIgnoreCase(targetName) && !target.equalsIgnoreCase(targetUuid)) continue;
-                }
-                if (entries.size() >= limit) {
-                    hasMore = true;
-                    break;
-                }
-                entries.add(LpSupport.actionMap(action));
-            }
+            Action.Target.Type targetType = type;
+            Instant sinceInstant = since;
+            ActionLog log = LpSupport.await(api.getActionLogger().getLog(), "getAuditLog");
+            Comparator<Action> newestFirst = Comparator.comparing(Action::getTimestamp).reversed();
+            LpSupport.Bounded<Action> top = LpSupport.topN(log.getContent().stream()
+                    .filter(action -> {
+                        if (targetType != null && action.getTarget().getType() != targetType) return false;
+                        if (sinceInstant != null && action.getTimestamp().isBefore(sinceInstant)) return false;
+                        if (target == null || target.isEmpty()) return true;
+                        String targetName = action.getTarget().getName();
+                        String targetUuid = action.getTarget().getUniqueId().map(UUID::toString).orElse("");
+                        return target.equalsIgnoreCase(targetName) || target.equalsIgnoreCase(targetUuid);
+                    }), newestFirst, limit);
+            List<Map<String, Object>> entries = top.values().stream().map(LpSupport::actionMap).toList();
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("actions", entries);
             out.put("count", entries.size());
+            out.put("total", top.total());
+            out.put("logTotal", log.getContent().size());
             out.put("limit", limit);
-            out.put("hasMore", hasMore);
+            out.put("hasMore", top.hasMore());
             return ToolResult.ok(out);
         }
     }
@@ -491,14 +499,14 @@ public final class LuckPermsHook implements Hook {
             var contexts = LpSupport.contextSet(args.get("contexts"));
             boolean remove = LpSupport.boolArg(args, "remove", false);
             boolean value = LpSupport.boolArg(args, "value", true);
-            int removed = LpSupport.clearPermissionNodes(user, permission, contexts);
+            Node node = remove ? null : LpSupport.permissionNode(args);
+            List<Node> cleared = LpSupport.clearPermissionNodes(user, permission, contexts);
 
-            if (!remove) {
-                var result = user.data().add(LpSupport.permissionNode(args));
-                if (!result.wasSuccessful()) {
-                    return ToolResult.error("Could not set permission");
-                }
+            if (node != null && !user.data().add(node).wasSuccessful()) {
+                LpSupport.restoreNodes(user, cleared);
+                return ToolResult.error("Could not set permission");
             }
+            int removed = cleared.size();
             LpSupport.saveHolder(api, user);
             LpSupport.audit(api, context.callerId(),
                     (remove ? "removed permission " : "set permission ") + permission + "=" + value, user);
@@ -536,14 +544,14 @@ public final class LuckPermsHook implements Hook {
             var contexts = LpSupport.contextSet(args.get("contexts"));
             boolean remove = LpSupport.boolArg(args, "remove", false);
             boolean value = LpSupport.boolArg(args, "value", true);
-            int removed = LpSupport.clearPermissionNodes(group, permission, contexts);
+            Node node = remove ? null : LpSupport.permissionNode(args);
+            List<Node> cleared = LpSupport.clearPermissionNodes(group, permission, contexts);
 
-            if (!remove) {
-                var result = group.data().add(LpSupport.permissionNode(args));
-                if (!result.wasSuccessful()) {
-                    return ToolResult.error("Could not set permission");
-                }
+            if (node != null && !group.data().add(node).wasSuccessful()) {
+                LpSupport.restoreNodes(group, cleared);
+                return ToolResult.error("Could not set permission");
             }
+            int removed = cleared.size();
             LpSupport.saveHolder(api, group);
             LpSupport.audit(api, context.callerId(),
                     (remove ? "removed permission " : "set permission ") + permission + "=" + value, group);
@@ -581,10 +589,16 @@ public final class LuckPermsHook implements Hook {
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.nameArg(args, "name");
+            // LuckPerms' createAndLoadGroup() returns an existing group successfully, so duplicate
+            // detection must load first. The API has no atomic create-if-absent; a concurrent
+            // create between these two calls is an unavoidable residual race.
             if (LpSupport.await(api.getGroupManager().loadGroup(name), "loadGroup").isPresent()) {
                 return ToolResult.error("Group already exists");
             }
             Group group = LpSupport.await(api.getGroupManager().createAndLoadGroup(name), "createAndLoadGroup");
+            if (group == null) {
+                return ToolResult.error("Could not create group");
+            }
             LpSupport.await(api.getGroupManager().saveGroup(group), "saveGroup");
             LpSupport.audit(api, context.callerId(), "created group " + name,
                     Action.Target.Type.GROUP, group.getName(), null);
@@ -623,14 +637,17 @@ public final class LuckPermsHook implements Hook {
                 throws Exception {
             User user = LpSupport.requireUser(api, args);
             var contexts = LpSupport.contextSet(args.get("contexts"));
-            int removed = LpSupport.clearInheritanceNodes(user, groupName, contexts);
+            Node node = null;
             if (action.equals("Add")) {
                 LpSupport.requireGroup(api, groupName);
-                var result = user.data().add(LpSupport.inheritanceNode(groupName, args));
-                if (!result.wasSuccessful()) {
-                    return ToolResult.error("Could not add group");
-                }
+                node = LpSupport.inheritanceNode(groupName, args);
             }
+            List<Node> cleared = LpSupport.clearInheritanceNodes(user, groupName, contexts);
+            if (node != null && !user.data().add(node).wasSuccessful()) {
+                LpSupport.restoreNodes(user, cleared);
+                return ToolResult.error("Could not add group");
+            }
+            int removed = cleared.size();
             LpSupport.saveHolder(api, user);
             LpSupport.audit(api, context.callerId(),
                     action.toLowerCase(Locale.ROOT) + " group " + groupName, user);
@@ -706,37 +723,40 @@ public final class LuckPermsHook implements Hook {
         @Override
         protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             Group group = LpSupport.requireGroup(api, LpSupport.nameArg(args, "name"));
-            String value = LpSupport.keyArg(args, "value");
             String type = LpSupport.stringArg(args, "type");
             if (type == null || type.isEmpty()) type = "META";
             type = type.toUpperCase(Locale.ROOT);
 
             var contexts = LpSupport.contextSet(args.get("contexts"));
-            int removed;
-            var nodeBuilderResult = switch (type) {
-                case "PREFIX", "SUFFIX" -> {
-                    int priority = LpSupport.intArg(args, "priority", 0, -100, 100);
-                    if (type.equals("PREFIX")) {
-                        removed = LpSupport.clearNodes(group, node -> node instanceof net.luckperms.api.node.types.PrefixNode
-                                && node.getContexts().equals(contexts));
-                        yield LpSupport.prefixNode(value, priority, args);
-                    }
-                    removed = LpSupport.clearNodes(group, node -> node instanceof net.luckperms.api.node.types.SuffixNode
-                            && node.getContexts().equals(contexts));
-                    yield LpSupport.suffixNode(value, priority, args);
+            String value;
+            Node node;
+            Predicate<Node> clearPredicate;
+            if (type.equals("PREFIX") || type.equals("SUFFIX")) {
+                value = LpSupport.displayValueArg(args);
+                int priority = LpSupport.intArg(args, "priority", 0, -100, 100);
+                if (type.equals("PREFIX")) {
+                    node = LpSupport.prefixNode(value, priority, args);
+                    clearPredicate = existing -> existing instanceof PrefixNode && existing.getContexts().equals(contexts);
+                } else {
+                    node = LpSupport.suffixNode(value, priority, args);
+                    clearPredicate = existing -> existing instanceof SuffixNode && existing.getContexts().equals(contexts);
                 }
-                case "META" -> {
-                    String key = LpSupport.keyArg(args, "key");
-                    removed = LpSupport.clearMetaNodes(group, key, contexts);
-                    yield LpSupport.metaNode(key, value, args);
-                }
-                default -> throw new LpSupport.InvalidArgument("Invalid type");
-            };
+            } else if (type.equals("META")) {
+                value = LpSupport.keyArg(args, "value");
+                String key = LpSupport.keyArg(args, "key");
+                node = LpSupport.metaNode(key, value, args);
+                clearPredicate = existing -> existing instanceof MetaNode m
+                        && m.getMetaKey().equalsIgnoreCase(key) && existing.getContexts().equals(contexts);
+            } else {
+                throw new LpSupport.InvalidArgument("Invalid type");
+            }
 
-            var result = group.data().add(nodeBuilderResult);
-            if (!result.wasSuccessful()) {
+            List<Node> cleared = LpSupport.clearNodes(group, clearPredicate);
+            if (!group.data().add(node).wasSuccessful()) {
+                LpSupport.restoreNodes(group, cleared);
                 return ToolResult.error("Could not set meta");
             }
+            int removed = cleared.size();
             LpSupport.saveHolder(api, group);
             LpSupport.audit(api, context.callerId(), "set " + type.toLowerCase(Locale.ROOT) + " " + value, group);
 

@@ -79,7 +79,8 @@ final class SparkDataReadTool implements McpTool {
                 out.put("size", handle.size());
                 out.put("offset", offset);
                 out.put("returned", chunk.returned());
-                out.put("truncated", offset + chunk.returned() < handle.size());
+                // Subtract instead of adding to avoid overflowing for offsets near Long.MAX_VALUE.
+                out.put("truncated", chunk.returned() < handle.size() - offset);
                 out.put("sha256OfChunk", chunk.sha256());
                 out.put("encoding", "base64");
                 out.put("data", Base64.getEncoder().encodeToString(chunk.bytes()));

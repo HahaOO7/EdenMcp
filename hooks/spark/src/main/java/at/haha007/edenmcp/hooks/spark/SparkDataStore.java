@@ -12,8 +12,11 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -41,7 +44,10 @@ final class SparkDataStore {
             Path candidate = spark != null
                     ? spark.getDataFolder().toPath()
                     : server.getWorldContainer().toPath().resolveSibling("plugins").resolve("spark");
-            Files.createDirectories(candidate);
+            // Inspection is read-only: never create the plugin directory just to make this
+            // hook available. Real Spark installs already have it; any future write path can
+            // create the directory lazily when it actually has something to store.
+            if (!Files.exists(candidate)) return Optional.empty();
             Path real = candidate.toRealPath();
             if (!Files.isDirectory(real)) return Optional.empty();
             return Optional.of(new SparkDataStore(real));
@@ -53,36 +59,48 @@ final class SparkDataStore {
     /** A bounded listing: at most {@code limit} newest entries plus truncation metadata. */
     record Listing(List<Map<String, Object>> files, int total, boolean hasMore) {}
 
+    private record ListingCandidate(Map<String, Object> entry, FileTime modified) {}
+
     Listing list(String kind, int limit) throws IOException {
-        Comparator<Map<String, Object>> newestFirst = Comparator.comparing(
-                m -> String.valueOf(m.get("lastModified")), Comparator.reverseOrder());
+        // Compare instants numerically, never their rendered strings: ISO-8601 text is not
+        // lexicographically ordered across seconds/minutes (e.g. "00:00:10Z" < "00:00:09Z").
+        Comparator<ListingCandidate> oldestFirst = Comparator.comparing(ListingCandidate::modified);
+        Comparator<ListingCandidate> newestFirst = oldestFirst.reversed();
         // Keep only the newest `limit` entries instead of materializing and sorting every file.
-        PriorityQueue<Map<String, Object>> newest = new PriorityQueue<>(
-                Comparator.comparing(m -> String.valueOf(m.get("lastModified"))));
+        PriorityQueue<ListingCandidate> newest = new PriorityQueue<>(oldestFirst);
         int total = 0;
         try (Stream<Path> paths = Files.list(root)) {
-            for (Path path : paths.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
+            // Traverse lazily: filtering by type and kind while walking keeps memory bounded to
+            // the top-N queue instead of materializing every regular file first.
+            Iterator<Path> iterator = paths.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).iterator();
+            while (iterator.hasNext()) {
+                Path path = iterator.next();
                 String name = path.getFileName().toString();
                 String type = typeOf(name);
                 if (type == null) continue;
                 if (!"all".equals(kind) && !kind.equals(type)) continue;
                 BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                FileTime modified = attrs.lastModifiedTime();
                 Map<String, Object> entry = new LinkedHashMap<>();
                 entry.put("name", name);
                 entry.put("type", type);
                 entry.put("mimeType", mimeOf(type));
                 entry.put("size", attrs.size());
-                entry.put("lastModified", attrs.lastModifiedTime().toInstant().toString());
+                entry.put("lastModified", modified.toInstant().toString());
                 total++;
+                ListingCandidate candidate = new ListingCandidate(entry, modified);
                 if (newest.size() < limit) {
-                    newest.add(entry);
-                } else if (newestFirst.compare(entry, newest.peek()) > 0) {
+                    newest.add(candidate);
+                } else if (oldestFirst.compare(candidate, newest.peek()) > 0) {
                     newest.poll();
-                    newest.add(entry);
+                    newest.add(candidate);
                 }
             }
         }
-        List<Map<String, Object>> files = newest.stream().sorted(newestFirst).toList();
+        List<Map<String, Object>> files = newest.stream()
+                .sorted(newestFirst)
+                .map(ListingCandidate::entry)
+                .toList();
         return new Listing(files, total, total > files.size());
     }
 
@@ -101,7 +119,8 @@ final class SparkDataStore {
         // Keep the validated channel open so a later read cannot follow a replaced path.
         try {
             SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ);
-            return new FileHandle(path, name, type, mimeOf(type), Files.size(path), channel);
+            // Take the size from the validated channel so it cannot disagree with the file we read.
+            return new FileHandle(path, name, type, mimeOf(type), channel.size(), channel);
         } catch (IOException e) {
             throw new IllegalArgumentException("Unable to open Spark data", e);
         }
@@ -116,11 +135,15 @@ final class SparkDataStore {
         ByteBuffer buffer = ByteBuffer.allocate(size);
         SeekableByteChannel channel = file.channel();
         channel.position(offset);
+        int returned = 0;
         while (buffer.hasRemaining()) {
-            if (channel.read(buffer) < 0) break;
+            int read = channel.read(buffer);
+            if (read < 0) break;
+            returned += read;
         }
-        byte[] bytes = buffer.array();
-        return new Chunk(bytes, sha256(bytes), size);
+        // Report only the bytes actually read: the file may have shrunk since the handle opened.
+        byte[] bytes = returned == size ? buffer.array() : Arrays.copyOf(buffer.array(), returned);
+        return new Chunk(bytes, sha256(bytes), returned);
     }
 
     byte[] readUpTo(FileHandle file, int maxBytes) throws IOException {

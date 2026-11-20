@@ -255,7 +255,10 @@ final class SparkApi {
             String key = "window";
             Object value = args.get(key);
             if (value == null) return null;
-            String text = String.valueOf(value).trim();
+            if (!(value instanceof String raw)) {
+                throw new IllegalArgumentException("Invalid '" + key + "'; allowed: " + String.join(", ", aliases.keySet()));
+            }
+            String text = raw.trim();
             String resolved = aliases.get(text.toLowerCase(java.util.Locale.ROOT));
             if (resolved == null) resolved = text.toUpperCase(java.util.Locale.ROOT).replace('-', '_');
             if (!allowed.contains(resolved)) {

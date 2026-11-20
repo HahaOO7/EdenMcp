@@ -24,23 +24,84 @@ import java.util.TreeMap;
  */
 final class ProtobufInspector {
     private static final int MAX_STRING_CHARS = 4096;
+    private static final int DEFAULT_MAX_TREE_CHARS = 1_000_000;
+    private static final Object OMITTED = new Object();
+    // Conservative per-node allowances so the emitted tree stays below the serialized-size cap.
+    private static final int MAP_OVERHEAD = 64;
+    private static final int LIST_OVERHEAD = 4;
+    private static final int NUMBER_COST = 24;
 
     private ProtobufInspector() {
     }
 
     record Result(Map<String, Object> tree, Map<String, Object> summary, boolean truncated,
-                  int bytesInspected, int totalBytes) {
+                  int bytesInspected, int totalBytes, int omittedNodes) {
     }
 
     static Result inspect(byte[] data, int maxDepth, int maxNodes, int maxBytes) {
+        return inspect(data, maxDepth, maxNodes, maxBytes, DEFAULT_MAX_TREE_CHARS);
+    }
+
+    /** Inspects with an additional cap on the approximate serialized size of the returned tree. */
+    static Result inspect(byte[] data, int maxDepth, int maxNodes, int maxBytes, int maxTreeChars) {
         // Nested messages are counted again as they are decoded, so the budget must not be
         // clamped to the raw file length or shallow structures would be marked truncated.
         Budget budget = new Budget(maxDepth, maxNodes, maxBytes);
         ParseAll parsed = parseAll(data, 0, budget);
+
+        TreeBudget treeBudget = new TreeBudget(Math.max(1, maxTreeChars));
+        treeBudget.consume(32); // Outer {"fields": [...]} wrapper.
+        List<Object> fields = boundFields(parsed.fields(), treeBudget);
         Map<String, Object> tree = new LinkedHashMap<>();
-        tree.put("fields", parsed.fields());
-        return new Result(tree, summarize(parsed.fields()), budget.exhausted() || !parsed.complete(),
-                Math.min(budget.bytes(), data.length), data.length);
+        tree.put("fields", fields);
+        boolean truncated = budget.exhausted() || !parsed.complete() || treeBudget.omitted() > 0;
+        return new Result(tree, summarize(parsed.fields()), truncated,
+                Math.min(budget.bytes(), data.length), data.length, treeBudget.omitted());
+    }
+
+    /** Copies decoded fields while dropping nodes once the output budget is spent. */
+    private static List<Object> boundFields(List<Object> fields, TreeBudget budget) {
+        List<Object> bounded = new ArrayList<>();
+        for (Object field : fields) {
+            Object copy = boundNode(field, budget);
+            if (copy != OMITTED) bounded.add(copy);
+        }
+        return bounded;
+    }
+
+    private static Object boundNode(Object node, TreeBudget budget) {
+        boolean fieldNode = isFieldNode(node);
+        Object copy = copyBounded(node, budget);
+        if (copy == OMITTED && fieldNode) budget.omitField();
+        return copy;
+    }
+
+    private static boolean isFieldNode(Object node) {
+        return node instanceof Map<?, ?> map && map.containsKey("field");
+    }
+
+    private static Object copyBounded(Object node, TreeBudget budget) {
+        if (node instanceof List<?> list) {
+            if (!budget.consume(LIST_OVERHEAD)) return OMITTED;
+            List<Object> copy = new ArrayList<>();
+            for (Object child : list) {
+                Object bounded = boundNode(child, budget);
+                if (bounded != OMITTED) copy.add(bounded);
+            }
+            return copy;
+        }
+        if (node instanceof Map<?, ?> map) {
+            if (!budget.consume(MAP_OVERHEAD)) return OMITTED;
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object bounded = boundNode(entry.getValue(), budget);
+                if (bounded == OMITTED) return OMITTED;
+                copy.put(String.valueOf(entry.getKey()), bounded);
+            }
+            return copy;
+        }
+        int cost = node instanceof String text ? text.length() * 2 + 4 : NUMBER_COST;
+        return budget.consume(cost) ? node : OMITTED;
     }
 
     private static ParseAll parseAll(byte[] data, int depth, Budget budget) {
@@ -205,6 +266,31 @@ final class ProtobufInspector {
     }
 
     private record ParseAll(List<Object> fields, int end, boolean complete) {
+    }
+
+    /** Approximate serialized-size budget for the response tree (not the parse budget). */
+    private static final class TreeBudget {
+        private final int maxChars;
+        private long chars;
+        private int omitted;
+
+        TreeBudget(int maxChars) {
+            this.maxChars = maxChars;
+        }
+
+        boolean consume(int cost) {
+            if (chars + cost > maxChars) return false;
+            chars += cost;
+            return true;
+        }
+
+        void omitField() {
+            omitted++;
+        }
+
+        int omitted() {
+            return omitted;
+        }
     }
 
     private static final class Budget {

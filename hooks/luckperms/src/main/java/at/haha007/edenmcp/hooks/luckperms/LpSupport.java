@@ -22,15 +22,20 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /** Shared helpers for the LuckPerms tools. */
 final class LpSupport {
@@ -38,6 +43,10 @@ final class LpSupport {
     static final int MAX_AUDIT = 200;
     static final int MAX_LIST = 200;
     static final int LUCKPERMS_TIMEOUT_SECONDS = 10;
+    static final int MAX_CONTEXT_PAIRS = 32;
+    static final int MAX_CONTEXT_KEY_LENGTH = 64;
+    static final int MAX_CONTEXT_VALUE_LENGTH = 256;
+    static final int MAX_DISPLAY_VALUE_LENGTH = 256;
 
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final UUID AUDIT_SOURCE = UUID.nameUUIDFromBytes("EdenMcp".getBytes(StandardCharsets.UTF_8));
@@ -106,8 +115,17 @@ final class LpSupport {
 
     static String keyArg(Map<String, Object> args, String key) throws InvalidArgument {
         String value = requiredArg(args, key);
-        if (value.length() > 128 || value.chars().anyMatch(Character::isISOControl)) {
+        if (value.length() > 128 || hasControlCharacters(value)) {
             throw new InvalidArgument("Invalid " + key);
+        }
+        return value;
+    }
+
+    /** For prefixes/suffixes: longer than a permission key, but still free of control characters. */
+    static String displayValueArg(Map<String, Object> args) throws InvalidArgument {
+        String value = requiredArg(args, "value");
+        if (value.length() > MAX_DISPLAY_VALUE_LENGTH || hasControlCharacters(value)) {
+            throw new InvalidArgument("Invalid value");
         }
         return value;
     }
@@ -124,19 +142,15 @@ final class LpSupport {
         return parsed;
     }
 
-    /** Accepts JSON numbers (including integral decimals) and numeric strings, nothing else. */
+    /** Accepts JSON numbers (including integral decimals), but never numeric strings. */
     private static Integer integerValue(Object value) {
+        if (!(value instanceof Number number)) return null;
         try {
-            if (value instanceof Number number) {
-                return new BigDecimal(number.toString()).toBigIntegerExact().intValueExact();
-            }
-            if (value instanceof String text) {
-                return Integer.valueOf(text.trim());
-            }
+            return new BigDecimal(number.toString()).toBigIntegerExact().intValueExact();
         } catch (ArithmeticException | NumberFormatException ignored) {
             // Reported as an invalid argument by the caller.
+            return null;
         }
-        return null;
     }
 
     static int boundedLimitArg(Map<String, Object> args, int defaultValue, int max) throws InvalidArgument {
@@ -146,12 +160,8 @@ final class LpSupport {
     static boolean boolArg(Map<String, Object> args, String key, boolean defaultValue) throws InvalidArgument {
         Object value = args == null ? null : args.get(key);
         if (value == null) return defaultValue;
-        return switch (value) {
-            case Boolean b -> b;
-            case String text when text.equalsIgnoreCase("true") -> true;
-            case String text when text.equalsIgnoreCase("false") -> false;
-            default -> throw new InvalidArgument("Invalid " + key);
-        };
+        if (value instanceof Boolean bool) return bool;
+        throw new InvalidArgument("Invalid " + key);
     }
 
     static Instant expiryArg(Map<String, Object> args) throws InvalidArgument {
@@ -164,6 +174,10 @@ final class LpSupport {
         } catch (DateTimeParseException e) {
             throw new InvalidArgument("Invalid expiry timestamp");
         }
+    }
+
+    private static boolean hasControlCharacters(String value) {
+        return value.chars().anyMatch(Character::isISOControl);
     }
 
     /** Resolves a user from {@code username} or {@code uuid} arguments. */
@@ -245,6 +259,9 @@ final class LpSupport {
         if (!(raw instanceof Map<?, ?> map)) {
             throw new InvalidArgument("contexts must be an object");
         }
+        if (map.size() > MAX_CONTEXT_PAIRS) {
+            throw new InvalidArgument("Too many contexts");
+        }
         Map<String, String> pairs = new LinkedHashMap<>();
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             if (!(entry.getKey() instanceof String rawKey) || !(entry.getValue() instanceof String rawValue)) {
@@ -252,9 +269,12 @@ final class LpSupport {
             }
             String key = rawKey.trim();
             String value = rawValue.trim();
-            if (!key.isEmpty() && !value.isEmpty()) {
-                pairs.put(key, value);
+            if (key.isEmpty() || value.isEmpty()) continue;
+            if (key.length() > MAX_CONTEXT_KEY_LENGTH || value.length() > MAX_CONTEXT_VALUE_LENGTH
+                    || hasControlCharacters(key) || hasControlCharacters(value)) {
+                throw new InvalidArgument("Invalid context");
             }
+            pairs.put(key, value);
         }
         return pairs;
     }
@@ -300,25 +320,28 @@ final class LpSupport {
     }
 
     /** Removes all nodes with the given permission in exactly the supplied contexts. */
-    static int clearPermissionNodes(PermissionHolder holder, String permission, ImmutableContextSet contexts) {
+    static List<Node> clearPermissionNodes(PermissionHolder holder, String permission, ImmutableContextSet contexts) {
         return clearNodes(holder, node -> node instanceof PermissionNode p
                 && p.getPermission().equalsIgnoreCase(permission) && node.getContexts().equals(contexts));
     }
 
-    static int clearInheritanceNodes(PermissionHolder holder, String group, ImmutableContextSet contexts) {
+    static List<Node> clearInheritanceNodes(PermissionHolder holder, String group, ImmutableContextSet contexts) {
         return clearNodes(holder, node -> node instanceof InheritanceNode i
                 && i.getGroupName().equalsIgnoreCase(group) && node.getContexts().equals(contexts));
     }
 
-    static int clearMetaNodes(PermissionHolder holder, String key, ImmutableContextSet contexts) {
-        return clearNodes(holder, node -> node instanceof MetaNode m
-                && m.getMetaKey().equalsIgnoreCase(key) && node.getContexts().equals(contexts));
-    }
-
-    static int clearNodes(PermissionHolder holder, java.util.function.Predicate<Node> predicate) {
+    /** Removes matching nodes and returns them, so a failed mutation can restore the original state. */
+    static List<Node> clearNodes(PermissionHolder holder, Predicate<Node> predicate) {
         List<Node> matching = holder.data().toCollection().stream().filter(predicate).toList();
         holder.data().clear(predicate);
-        return matching.size();
+        return matching;
+    }
+
+    /** Undoes a clear after a failed add; the cleared nodes can always be re-added to the same holder. */
+    static void restoreNodes(PermissionHolder holder, List<Node> nodes) {
+        for (Node node : nodes) {
+            holder.data().add(node);
+        }
     }
 
     static Map<String, Object> holderMap(PermissionHolder holder) {
@@ -348,24 +371,59 @@ final class LpSupport {
         return values.size() > limit ? List.copyOf(values.subList(0, limit)) : values;
     }
 
-    /** Truncates a map to the response bound without mutating the original. */
-    static <K, V> Map<K, V> limited(Map<K, V> values, int limit) {
-        if (values.size() <= limit) return values;
-        Map<K, V> out = new LinkedHashMap<>();
-        int i = 0;
-        for (Map.Entry<K, V> entry : values.entrySet()) {
-            if (i++ >= limit) break;
-            out.put(entry.getKey(), entry.getValue());
-        }
-        return out;
-    }
-
     static boolean hasMore(Collection<?> values, int limit) {
         return values.size() > limit;
     }
 
-    static boolean hasMore(Map<?, ?> values, int limit) {
-        return values.size() > limit;
+    /** A bounded view of a larger stream, together with the number of elements seen before truncation. */
+    record Bounded<T>(List<T> values, int total) {
+        boolean hasMore() {
+            return total > values.size();
+        }
+    }
+
+    /** Keeps the greatest {@code limit} elements in descending order, counting every element seen. */
+    static <T> Bounded<T> topN(Stream<T> values, Comparator<? super T> descending, int limit) {
+        PriorityQueue<T> smallestSelected = new PriorityQueue<>(descending.reversed());
+        int[] total = {0};
+        values.forEach(value -> {
+            total[0]++;
+            if (smallestSelected.size() < limit) {
+                smallestSelected.add(value);
+            } else if (descending.compare(value, smallestSelected.peek()) < 0) {
+                // Descending order: a negative comparison ranks the new value above the current head.
+                smallestSelected.poll();
+                smallestSelected.add(value);
+            }
+        });
+        List<T> selected = new ArrayList<>(smallestSelected);
+        selected.sort(descending);
+        return new Bounded<>(List.copyOf(selected), total[0]);
+    }
+
+    /** Keeps the smallest {@code limit} comparable elements in natural order, counting every element seen. */
+    static <T extends Comparable<? super T>> Bounded<T> boundedSorted(Stream<T> values, int limit) {
+        TreeSet<T> selected = new TreeSet<>();
+        int[] total = {0};
+        values.forEach(value -> {
+            total[0]++;
+            if (selected.size() < limit || value.compareTo(selected.last()) < 0) {
+                selected.add(value);
+                if (selected.size() > limit) selected.pollLast();
+            }
+        });
+        return new Bounded<>(List.copyOf(selected), total[0]);
+    }
+
+    /** Keeps the first {@code limit} elements in encounter order, counting every element seen. */
+    static <T> Bounded<T> boundedFirst(Stream<T> values, int limit) {
+        List<T> selected = new ArrayList<>();
+        int[] total = {0};
+        values.forEach(value -> {
+            total[0]++;
+            if (selected.size() < limit) selected.add(value);
+        });
+        return new Bounded<>(List.copyOf(selected), total[0]);
     }
 
     static List<Map<String, Object>> nodeMaps(Collection<? extends Node> nodes, int limit) {

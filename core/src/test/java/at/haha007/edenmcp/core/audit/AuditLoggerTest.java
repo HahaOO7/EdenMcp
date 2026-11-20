@@ -64,6 +64,23 @@ class AuditLoggerTest {
     }
 
     @Test
+    void toolNameAndOtherCallerDerivedFieldsAreSanitisedAgainstLogInjection() {
+        audit.toolCall("key=primary@host", "evil\u0001\u0007\r\n[AUDIT] forged success=true", "SAFE",
+                false, "error\n[SECURITY] forged");
+
+        assertEquals(1, records.size(), "one input line must produce exactly one log record");
+        String msg = message(0);
+        assertFalse(msg.contains("\r") || msg.contains("\n"), msg);
+        assertTrue(msg.contains("tool=evil    [AUDIT] forged success=true"), msg);
+        assertTrue(msg.contains("outcome=error [SECURITY] forged"), msg);
+
+        records.clear();
+        audit.modeChange("u\n[AUDIT] forged", "SAFE\nnext=forged", "UNSAFE\rnext=forged");
+        assertTrue(records.stream().noneMatch(r -> r.getMessage().contains("\n")
+                || r.getMessage().contains("\r")), "mode-change fields must be sanitized too");
+    }
+
+    @Test
     void longCallerAndKeyIdAreTruncated() {
         String longValue = "a".repeat(250);
 

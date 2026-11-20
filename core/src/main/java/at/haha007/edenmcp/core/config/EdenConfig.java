@@ -48,9 +48,12 @@ public record EdenConfig(
                                   int shutdownGraceSeconds, int sseKeepaliveMs,
                                   int sessionPruneIntervalMs, int corsMaxAgeSeconds,
                                   int authFailurePruneThreshold, int readBufferBytes,
-                                  TlsConfig tls, int maxResponseChars, int callTimeoutSeconds) {
+                                  TlsConfig tls, int maxResponseChars, int callTimeoutSeconds,
+                                  int maxJsonDepth) {
         public static final int DEFAULT_MAX_RESPONSE_CHARS = 1_000_000;
         public static final int DEFAULT_CALL_TIMEOUT_SECONDS = 30;
+        public static final int DEFAULT_MAX_JSON_DEPTH = 64;
+        public static final int MIN_MAX_JSON_DEPTH = 8;
 
         /** Compatibility constructor for callers that predate the response/timeout caps. */
         public TransportConfig(String type, String bind, int port,
@@ -68,13 +71,33 @@ public record EdenConfig(
                     threadPoolMaxSize, threadPoolKeepAliveSeconds, threadPoolQueueCapacity,
                     shutdownGraceSeconds, sseKeepaliveMs, sessionPruneIntervalMs,
                     corsMaxAgeSeconds, authFailurePruneThreshold, readBufferBytes, tls,
-                    DEFAULT_MAX_RESPONSE_CHARS, DEFAULT_CALL_TIMEOUT_SECONDS);
+                    DEFAULT_MAX_RESPONSE_CHARS, DEFAULT_CALL_TIMEOUT_SECONDS, DEFAULT_MAX_JSON_DEPTH);
+        }
+
+        /** Compatibility constructor for callers that predate {@code max-json-depth}. */
+        public TransportConfig(String type, String bind, int port,
+                               List<String> allowedHosts, List<String> allowedOrigins,
+                               int maxBodyBytes, int maxBatchSize, int maxSseClients,
+                               int sessionIdleSeconds, int maxSessions,
+                               int threadPoolCoreSize, int threadPoolMaxSize,
+                               int threadPoolKeepAliveSeconds, int threadPoolQueueCapacity,
+                               int shutdownGraceSeconds, int sseKeepaliveMs,
+                               int sessionPruneIntervalMs, int corsMaxAgeSeconds,
+                               int authFailurePruneThreshold, int readBufferBytes,
+                               TlsConfig tls, int maxResponseChars, int callTimeoutSeconds) {
+            this(type, bind, port, allowedHosts, allowedOrigins, maxBodyBytes, maxBatchSize,
+                    maxSseClients, sessionIdleSeconds, maxSessions, threadPoolCoreSize,
+                    threadPoolMaxSize, threadPoolKeepAliveSeconds, threadPoolQueueCapacity,
+                    shutdownGraceSeconds, sseKeepaliveMs, sessionPruneIntervalMs,
+                    corsMaxAgeSeconds, authFailurePruneThreshold, readBufferBytes, tls,
+                    maxResponseChars, callTimeoutSeconds, DEFAULT_MAX_JSON_DEPTH);
         }
 
         public TransportConfig {
             // Keep enough room for a minimal, still-valid JSON-RPC error response.
             maxResponseChars = Math.max(512, maxResponseChars);
             callTimeoutSeconds = Math.max(1, callTimeoutSeconds);
+            maxJsonDepth = Math.max(MIN_MAX_JSON_DEPTH, maxJsonDepth);
         }
     }
 
@@ -130,6 +153,8 @@ public record EdenConfig(
         int readBufferBytes = Math.max(256, cfg.getInt("mcp.transport.read-buffer-bytes", 8192));
         int maxResponseChars = Math.max(512, cfg.getInt("mcp.transport.max-response-chars", 1_000_000));
         int callTimeoutSeconds = Math.max(1, cfg.getInt("mcp.transport.call-timeout-seconds", 30));
+        int maxJsonDepth = Math.max(TransportConfig.MIN_MAX_JSON_DEPTH,
+                cfg.getInt("mcp.transport.max-json-depth", TransportConfig.DEFAULT_MAX_JSON_DEPTH));
 
         boolean tlsEnabled = cfg.getBoolean("mcp.transport.tls.enabled", true);
         String tlsMode = cfg.getString("mcp.transport.tls.mode", "self-signed");
@@ -151,7 +176,7 @@ public record EdenConfig(
                 readBufferBytes,
                 new TlsConfig(tlsEnabled, tlsMode, certPath, keyPath, ksPath, ksPass,
                         requireClientCert, trustPath, trustPass, selfSignedKeySize, selfSignedValidityDays),
-                maxResponseChars, callTimeoutSeconds);
+                maxResponseChars, callTimeoutSeconds, maxJsonDepth);
 
         AuthConfig auth = new AuthConfig(
                 cfg.getBoolean("mcp.auth.allow-legacy-header", false),

@@ -1,7 +1,6 @@
 package at.haha007.edenmcp.tools;
 
 import java.math.BigDecimal;
-import java.util.Locale;
 import java.util.Map;
 
 /** Strict parsing of tool arguments; the transport preserves JSON types, so mismatches are errors. */
@@ -13,18 +12,14 @@ final class ToolArgs {
         Object value = args.get(key);
         if (value == null) return fallback;
         long parsed;
-        if (value instanceof Number number) {
-            try {
-                parsed = new BigDecimal(number.toString()).toBigIntegerExact().longValueExact();
-            } catch (ArithmeticException | NumberFormatException e) {
-                throw new IllegalArgumentException("Invalid '" + key + "'");
-            }
-        } else {
-            try {
-                parsed = Long.parseLong(String.valueOf(value).trim());
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException("Invalid '" + key + "'");
-            }
+        if (!(value instanceof Number number)) {
+            throw new IllegalArgumentException("Invalid '" + key + "'");
+        }
+        try {
+            // Exact conversion rejects fractional/overflowing numbers; JSON strings are never accepted.
+            parsed = new BigDecimal(number.toString()).toBigIntegerExact().longValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid '" + key + "'");
         }
         if (parsed < min || parsed > max) {
             throw new IllegalArgumentException("'" + key + "' must be between " + min + " and " + max);
@@ -36,9 +31,6 @@ final class ToolArgs {
         Object value = args.get(key);
         if (value == null) return false;
         if (value instanceof Boolean b) return b;
-        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
-        if (text.equals("true") || text.equals("yes") || text.equals("1")) return true;
-        if (text.equals("false") || text.equals("no") || text.equals("0")) return false;
         throw new IllegalArgumentException("Invalid '" + key + "'");
     }
 

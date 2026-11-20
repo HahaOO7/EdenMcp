@@ -29,6 +29,8 @@ mcp:
     #                                   # tool/resource payloads are trimmed to valid JSON and report
     #                                   # truncated=true / omittedCount (strings get a [truncated] marker)
     # call-timeout-seconds: 30          # deadline for each tool execution and resource read (minimum 1)
+    # max-json-depth: 64                # maximum nested JSON objects/arrays in a request (minimum 8);
+    #                                   # deeper requests (and excessive object keys) get HTTP 400
     tls:
       enabled: true         # protects access key/data in transit
       mode: self-signed     # self-signed (auto-generated on first start) | custom

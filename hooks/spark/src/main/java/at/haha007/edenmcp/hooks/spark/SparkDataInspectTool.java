@@ -82,6 +82,7 @@ final class SparkDataInspectTool implements McpTool {
                 out.put("size", handle.size());
                 out.put("bytesInspected", inspected.bytesInspected());
                 out.put("truncated", inspected.truncated());
+                out.put("omittedNodes", inspected.omittedNodes());
                 out.put("summary", inspected.summary());
                 out.put("tree", inspected.tree());
                 return ToolResult.ok(out);

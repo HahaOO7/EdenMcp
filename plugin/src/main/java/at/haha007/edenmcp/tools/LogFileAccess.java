@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,8 +28,20 @@ final class LogFileAccess {
     private final int maxDecompressedBytes;
 
     LogFileAccess(Path logsDir, int maxDecompressedBytes) {
-        this.root = logsDir;
+        this.root = canonicalRoot(logsDir);
         this.maxDecompressedBytes = maxDecompressedBytes;
+    }
+
+    /** Use the real path when available so a symlinked logs/ directory still resolves inside the root. */
+    private static Path canonicalRoot(Path logsDir) {
+        if (Files.exists(logsDir)) {
+            try {
+                return logsDir.toRealPath();
+            } catch (IOException ignored) {
+                // Fall through to the absolute normalized path.
+            }
+        }
+        return logsDir.toAbsolutePath().normalize();
     }
 
     enum Compression { PLAIN, GZIP, ZIP }
@@ -91,11 +104,15 @@ final class LogFileAccess {
     }
 
     /**
-     * Reads the entire decompressed content of a compressed log, capped at
-     * {@code maxDecompressedBytes} to prevent decompression bombs.
+     * Decompresses a log while retaining only the last {@code maxTailBytes} of data. Total
+     * decompression is still capped at {@code maxDecompressedBytes} to prevent bombs; the
+     * returned window always starts at a line boundary so strict UTF-8 decoding stays safe.
      */
-    Decompressed readCompressed(Path path, Compression compression) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Decompressed readCompressed(Path path, Compression compression, int maxTailBytes) throws IOException {
+        int tailCap = Math.clamp(maxTailBytes, 0, Math.max(0, maxDecompressedBytes));
+        ByteArrayOutputStream tail = new ByteArrayOutputStream(Math.min(tailCap, 8192));
+        long total = 0;
+        boolean decompressionCapped = false;
         try (InputStream raw = Files.newInputStream(path);
              InputStream decoded = switch (compression) {
                  case GZIP -> new GZIPInputStream(raw);
@@ -105,15 +122,49 @@ final class LogFileAccess {
             byte[] buf = new byte[8192];
             int n;
             while ((n = decoded.read(buf)) >= 0) {
-                if (out.size() + n > maxDecompressedBytes) {
-                    int remaining = maxDecompressedBytes - out.size();
-                    if (remaining > 0) out.write(buf, 0, remaining);
-                    return new Decompressed(out.toByteArray(), true);
+                if (n == 0) continue;
+                long allowed = maxDecompressedBytes - total;
+                if (allowed <= 0) {
+                    decompressionCapped = true;
+                    break;
                 }
-                out.write(buf, 0, n);
+                int take = (int) Math.min(n, allowed);
+                tail.write(buf, 0, take);
+                total += take;
+                if (take < n) {
+                    decompressionCapped = true;
+                    break;
+                }
+                // Compact occasionally so the rolling buffer never grows far past the window.
+                if (tail.size() > tailCap + buf.length) {
+                    byte[] buffered = tail.toByteArray();
+                    int drop = buffered.length - tailCap;
+                    tail.reset();
+                    tail.write(buffered, drop, buffered.length - drop);
+                }
             }
-            return new Decompressed(out.toByteArray(), false);
         }
+        byte[] buffered = tail.toByteArray();
+        int start = Math.max(0, buffered.length - tailCap);
+        boolean skippedBeforeWindow = total > buffered.length - start;
+        byte[] window = start == 0 ? buffered : Arrays.copyOfRange(buffered, start, buffered.length);
+        if (skippedBeforeWindow) window = dropPartialFirstLine(window);
+        return new Decompressed(window, decompressionCapped || skippedBeforeWindow);
+    }
+
+    /** Drops a leading partial line so the window begins at a UTF-8 character boundary. */
+    private static byte[] dropPartialFirstLine(byte[] window) {
+        for (int i = 0; i < window.length; i++) {
+            byte b = window[i];
+            if (b == '\n' || b == '\r') {
+                int cut = (b == '\r' && i + 1 < window.length && window[i + 1] == '\n') ? i + 2 : i + 1;
+                return Arrays.copyOfRange(window, cut, window.length);
+            }
+        }
+        // No line break in the window: skip leading UTF-8 continuation bytes, if any.
+        int start = 0;
+        while (start < window.length && (window[start] & 0xC0) == 0x80) start++;
+        return start == 0 ? window : Arrays.copyOfRange(window, start, window.length);
     }
 
     record Decompressed(byte[] bytes, boolean truncated) {}

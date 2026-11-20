@@ -44,6 +44,10 @@ public final class McpHttpServer {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final String PROTOCOL_VERSION = "2024-11-05";
     private static final Set<String> SUPPORTED_VERSIONS = Set.of("2024-11-05", "2025-03-26");
+    /** Object-member budget for one request tree; bodies are already byte-bounded. */
+    private static final int MAX_JSON_KEYS = 10_000;
+    private static final int MAX_KEYTOOL_OUTPUT_BYTES = 64 * 1024;
+    private static final int KEYTOOL_STARTUP_TIMEOUT_SECONDS = 30;
 
     private final EdenConfig config;
     private final AccessKeyManager keyManager;
@@ -157,20 +161,29 @@ public final class McpHttpServer {
         return sessions.size();
     }
 
-    /** Close every session and SSE stream bound to a key id (used after rotation/revocation). */
+    /**
+     * Closes every session and SSE stream bound to a key id (used after rotation/revocation).
+     * A {@code null} id means <em>all principals</em>: every session and SSE stream is closed,
+     * which is the safe fail-closed behavior for a full revocation instead of silently doing
+     * nothing. The return value counts closed sessions (SSE streams are closed in addition).
+     */
     public int invalidateSessionsForPrincipal(@Nullable String principalId) {
         int n = 0;
         Iterator<McpSession> it = sessions.values().iterator();
         while (it.hasNext()) {
-            if (principalId != null && principalId.equals(it.next().principal().id())) {
+            McpSession session = it.next();
+            if (principalId == null || principalId.equals(session.principal().id())) {
                 it.remove();
                 n++;
             }
         }
         for (SseClient c : sseClients) {
-            if (principalId != null && principalId.equals(c.principalId())) c.close();
+            if (principalId == null || principalId.equals(c.principalId())) c.close();
         }
-        if (n > 0) logger.info("Invalidated " + n + " MCP session(s) for key " + principalId);
+        if (n > 0) {
+            logger.info("Invalidated " + n + " MCP session(s) for "
+                    + (principalId == null ? "all principals" : "key " + principalId));
+        }
         return n;
     }
 
@@ -255,37 +268,54 @@ public final class McpHttpServer {
             sendJson(ex, 413, rpcError(null, -32700, "Request too large"));
             return;
         }
-
-        JsonElement rootEl;
-        try {
-            rootEl = JsonParser.parseString(body);
-        } catch (Exception e) {
-            sendJson(ex, 400, rpcError(null, -32700, "Parse error"));
+        if (!rawJsonDepthWithinLimit(body, config.transport().maxJsonDepth())) {
+            sendJson(ex, 400, rpcError(null, -32600, "JSON nesting too deep"));
             return;
         }
-        if (rootEl.isJsonArray()) {
-            JsonArray arr = rootEl.getAsJsonArray();
-            if (arr.size() > config.transport().maxBatchSize()) {
-                sendJson(ex, 400, rpcError(null, -32600, "Batch too large"));
+
+        try {
+            JsonElement rootEl;
+            try {
+                rootEl = JsonParser.parseString(body);
+            } catch (Exception e) {
+                sendJson(ex, 400, rpcError(null, -32700, "Parse error"));
                 return;
             }
-            JsonArray out = new JsonArray();
-            for (JsonElement el : arr) {
-                JsonObject resp = handleRpc(el.isJsonObject() ? el.getAsJsonObject() : new JsonObject(), ex, principal);
-                if (resp != null) out.add(resp);
+            // GSON's parser and our tree -> Java conversion are recursive. Check the shape
+            // iteratively before any recursive walk touches client-controlled data.
+            if (!jsonWithinLimits(rootEl, config.transport().maxJsonDepth(), MAX_JSON_KEYS)) {
+                sendJson(ex, 400, rpcError(null, -32600, "JSON structure too deep or too many keys"));
+                return;
             }
-            // The whole batch is one HTTP response, so cap the aggregate as well.
-            sendJson(ex, 200, capArray(out, config.transport().maxResponseChars(), true));
-        } else if (rootEl.isJsonObject()) {
-            JsonObject resp = handleRpc(rootEl.getAsJsonObject(), ex, principal);
-            if (resp == null) {
-                ex.sendResponseHeaders(202, -1);
-                ex.close();
+            if (rootEl.isJsonArray()) {
+                JsonArray arr = rootEl.getAsJsonArray();
+                if (arr.size() > config.transport().maxBatchSize()) {
+                    sendJson(ex, 400, rpcError(null, -32600, "Batch too large"));
+                    return;
+                }
+                JsonArray out = new JsonArray();
+                for (JsonElement el : arr) {
+                    JsonObject resp = handleRpc(el.isJsonObject() ? el.getAsJsonObject() : new JsonObject(), ex, principal);
+                    if (resp != null) out.add(resp);
+                }
+                // The whole batch is one HTTP response, so cap the aggregate as well.
+                sendJson(ex, 200, capArray(out, config.transport().maxResponseChars(), true));
+            } else if (rootEl.isJsonObject()) {
+                JsonObject resp = handleRpc(rootEl.getAsJsonObject(), ex, principal);
+                if (resp == null) {
+                    ex.sendResponseHeaders(202, -1);
+                    ex.close();
+                } else {
+                    sendJson(ex, 200, resp);
+                }
             } else {
-                sendJson(ex, 200, resp);
+                sendJson(ex, 400, rpcError(null, -32600, "Invalid Request"));
             }
-        } else {
-            sendJson(ex, 400, rpcError(null, -32600, "Invalid Request"));
+        } catch (StackOverflowError e) {
+            // Hostile nesting can still overflow GSON's recursive parser before a tree exists,
+            // or a recursive serialization/conversion can overflow later. Never let an Error
+            // escape into the HTTP handler; this boundary always answers with a clean 400.
+            sendJson(ex, 400, rpcError(null, -32600, "Invalid Request: JSON nesting too deep"));
         }
     }
 
@@ -316,7 +346,7 @@ public final class McpHttpServer {
                 default -> rpcError(id, -32601, "Method not found: " + rpcMethod);
             };
         } catch (Exception e) {
-            logger.log(Level.WARNING, "MCP method error: " + rpcMethod, e);
+            logger.log(Level.WARNING, "MCP method error: " + audit.safe(rpcMethod), e);
             return rpcError(id, -32000, "Internal error");
         }
     }
@@ -386,11 +416,12 @@ public final class McpHttpServer {
                     : Map.of("error", Objects.requireNonNull(result.error(), "Tool error message"));
             return toolCallResponse(result.success(), payload == null ? Map.of() : payload);
         } catch (TimeoutException e) {
-            logger.warning("Tool execution timed out after " + timeoutSeconds + "s: " + name);
+            String loggedName = audit.safe(name);
+            logger.warning("Tool execution timed out after " + timeoutSeconds + "s: " + loggedName);
             audit.toolCall(caller, name, active.name(), false, "timeout");
-            return toolCallResponse(false, "Tool execution timed out after " + timeoutSeconds + "s: " + name);
+            return toolCallResponse(false, "Tool execution timed out after " + timeoutSeconds + "s: " + loggedName);
         } catch (Exception e) {
-            logger.log(Level.WARNING, "Tool execution failed: " + name, e);
+            logger.log(Level.WARNING, "Tool execution failed: " + audit.safe(name), e);
             audit.toolCall(caller, name, active.name(), false, "exception:" + e.getClass().getSimpleName());
             return toolCallResponse(false, "Execution error");
         }
@@ -478,11 +509,12 @@ public final class McpHttpServer {
             result.add("contents", contentsArray);
             return rpcResult(id, result);
         } catch (TimeoutException e) {
-            logger.warning("Resource read timed out after " + timeoutSeconds + "s: " + uri);
+            String loggedUri = audit.safe(uri);
+            logger.warning("Resource read timed out after " + timeoutSeconds + "s: " + loggedUri);
             audit.resourceRead(caller, uri, active.name(), false, "timeout");
-            return rpcError(id, -32000, "Resource read timed out after " + timeoutSeconds + "s: " + uri);
+            return rpcError(id, -32000, "Resource read timed out after " + timeoutSeconds + "s: " + loggedUri);
         } catch (Exception e) {
-            logger.log(Level.WARNING, "Resource read failed: " + uri, e);
+            logger.log(Level.WARNING, "Resource read failed: " + audit.safe(uri), e);
             audit.resourceRead(caller, uri, active.name(), false, "exception:" + e.getClass().getSimpleName());
             return rpcError(id, -32000, "Resource read failed: " + uri);
         }
@@ -570,7 +602,9 @@ public final class McpHttpServer {
         String ip = callerIp(ex);
         FailureRecord record = failures.get(ip);
         if (record != null) {
-            if (record.blockUntil > System.currentTimeMillis()) {
+            long now = System.currentTimeMillis();
+            if (record.blockUntil > now) {
+                record.lastSeen = now;
                 sendJson(ex, 429, Map.of("error", "too many failed authentication attempts"));
                 return null;
             }
@@ -628,7 +662,7 @@ public final class McpHttpServer {
             String origin = origins.getFirst().trim();
             if (explicitOrigins) {
                 if (!allowedOrigins.contains(origin)) {
-                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
+                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + audit.safe(origin));
                     sendJson(ex, 403, Map.of("error", "origin not allowed"));
                     return false;
                 }
@@ -643,7 +677,7 @@ public final class McpHttpServer {
                 } catch (Exception ignored) {
                 }
                 if (!isAllowedHost(originHost)) {
-                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + origin);
+                    logger.warning("[SECURITY] Rejected request with disallowed Origin: " + audit.safe(origin));
                     sendJson(ex, 403, Map.of("error", "origin not allowed"));
                     return false;
                 }
@@ -652,7 +686,7 @@ public final class McpHttpServer {
         String host = hostOf(ex.getRequestHeaders().getFirst("Host"));
         if (host != null && !isAllowedHost(host)
                 && !(wildcardBind && !explicitHosts && (origins == null || origins.isEmpty()))) {
-            logger.warning("[SECURITY] Rejected request with disallowed Host: " + host);
+            logger.warning("[SECURITY] Rejected request with disallowed Host: " + audit.safe(host));
             sendJson(ex, 403, Map.of("error", "host not allowed"));
             return false;
         }
@@ -679,10 +713,12 @@ public final class McpHttpServer {
     }
 
     private void recordFailure(String ip) {
+        long now = System.currentTimeMillis();
         FailureRecord rec = failures.computeIfAbsent(ip, ignored -> new FailureRecord());
+        rec.lastSeen = now;
         rec.count++;
         if (rec.count >= config.auth().maxFailures()) {
-            rec.blockUntil = System.currentTimeMillis() + config.auth().blockSeconds() * 1000L;
+            rec.blockUntil = now + config.auth().blockSeconds() * 1000L;
             rec.count = 0;
             logger.warning("[SECURITY] Auth failure limit reached for " + ip + "; blocking for "
                     + config.auth().blockSeconds() + "s");
@@ -690,14 +726,23 @@ public final class McpHttpServer {
     }
 
     private void pruneFailures() {
-        if (failures.size() < config.transport().authFailurePruneThreshold()) return;
         long now = System.currentTimeMillis();
-        failures.entrySet().removeIf(e -> e.getValue().blockUntil < now && e.getValue().count == 0);
+        // A record that never reached maxFailures used to live forever. Evict on idle time
+        // regardless of count; only the cheap sweep of already-expired blocks is gated by the
+        // configured threshold.
+        long idleMillis = Math.max(1_000L, config.auth().blockSeconds() * 2_000L);
+        boolean fullSweep = failures.size() >= config.transport().authFailurePruneThreshold();
+        failures.entrySet().removeIf(e -> {
+            FailureRecord rec = e.getValue();
+            if (now - rec.lastSeen > idleMillis) return true;
+            return fullSweep && rec.blockUntil > 0 && rec.blockUntil < now && rec.count == 0;
+        });
     }
 
     private static final class FailureRecord {
         private int count;
         private long blockUntil;
+        private volatile long lastSeen = System.currentTimeMillis();
     }
 
     private String caller(HttpExchange ex, Principal principal) {
@@ -887,9 +932,68 @@ public final class McpHttpServer {
         }
     }
 
+    /** Strict protocol string accessor: numbers, booleans, arrays and objects are not coerced. */
     private static String optString(JsonObject o, String key) {
-        if (o == null || !o.has(key) || o.get(key).isJsonNull()) return null;
-        try { return o.get(key).getAsString(); } catch (Exception e) { return null; }
+        if (o == null || !o.has(key)) return null;
+        JsonElement value = o.get(key);
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return null;
+        return value.getAsString();
+    }
+
+    /**
+     * Cheap pre-parse guard: reject absurd bracket nesting before GSON's recursive parser can
+     * overflow the stack. Strings and escapes are skipped so brackets in text are not counted.
+     */
+    private static boolean rawJsonDepthWithinLimit(String body, int maxDepth) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{' || c == '[') {
+                if (++depth > maxDepth) return false;
+            } else if (c == '}' || c == ']') {
+                depth--;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Iterative (no recursion) check of an incoming JSON tree. Depth counts nested objects and
+     * arrays from the root; keys are counted across the whole tree. Both bounds must hold before
+     * any recursive GSON conversion of the request is attempted.
+     */
+    @SuppressWarnings("SameParameterValue")
+    private static boolean jsonWithinLimits(JsonElement root, int maxDepth, int maxKeys) {
+        Deque<Map.Entry<JsonElement, Integer>> pending = new ArrayDeque<>();
+        pending.push(Map.entry(root, 1));
+        int keys = 0;
+        while (!pending.isEmpty()) {
+            Map.Entry<JsonElement, Integer> current = pending.pop();
+            JsonElement element = current.getKey();
+            int depth = current.getValue();
+            if (depth > maxDepth) return false;
+            if (element.isJsonObject()) {
+                for (Map.Entry<String, JsonElement> child : element.getAsJsonObject().entrySet()) {
+                    if (++keys > maxKeys) return false;
+                    pending.push(Map.entry(child.getValue(), depth + 1));
+                }
+            } else if (element.isJsonArray()) {
+                for (JsonElement child : element.getAsJsonArray()) {
+                    pending.push(Map.entry(child, depth + 1));
+                }
+            }
+        }
+        return true;
     }
 
     private static Map<String, Object> jsonObjectToMap(JsonObject obj) {
@@ -999,8 +1103,29 @@ public final class McpHttpServer {
             );
             pb.redirectErrorStream(true);
             Process p = pb.start();
-            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int code = p.waitFor();
+            FutureTask<String> outputTask = new FutureTask<>(
+                    () -> readBoundedProcessOutput(p.getInputStream(), MAX_KEYTOOL_OUTPUT_BYTES));
+            Thread reader = Thread.ofVirtual().start(outputTask);
+            try {
+                // Timed equivalent of waitFor(...) that surfaces TimeoutException directly:
+                // a hung keytool must not stall plugin startup forever.
+                p.onExit().get(KEYTOOL_STARTUP_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                p.destroyForcibly();
+                outputTask.cancel(true);
+                reader.interrupt();
+                throw new IllegalStateException("TLS keystore generation (keytool) timed out after "
+                        + KEYTOOL_STARTUP_TIMEOUT_SECONDS + "s; process terminated", e);
+            }
+            String out;
+            try {
+                out = outputTask.get(5, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                outputTask.cancel(true);
+                reader.interrupt();
+                out = "";
+            }
+            int code = p.exitValue();
             if (code == 0 && Files.exists(ks)) return true;
             logger.warning("keytool could not generate a self-signed certificate (exit " + code + "): "
                     + out.substring(0, Math.min(300, out.length())));
@@ -1009,10 +1134,29 @@ public final class McpHttpServer {
             Thread.currentThread().interrupt();
             logger.log(Level.WARNING, "Interrupted while generating a self-signed certificate", e);
             return false;
+        } catch (IllegalStateException e) {
+            // Timeout: propagate the clear error instead of hiding it behind a generic failure.
+            throw e;
         } catch (Exception e) {
             logger.log(Level.WARNING, "Could not run keytool for self-signed cert generation", e);
             return false;
         }
+    }
+
+    /** Reads at most {@code maxBytes} of a child process' merged output; never buffers it all. */
+    static String readBoundedProcessOutput(InputStream in, int maxBytes) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(maxBytes, 8192));
+        byte[] buf = new byte[4096];
+        int total = 0;
+        try (InputStream stream = in) {
+            while (total < maxBytes) {
+                int n = stream.read(buf, 0, Math.min(buf.length, maxBytes - total));
+                if (n < 0) break;
+                out.write(buf, 0, n);
+                total += n;
+            }
+        }
+        return out.toString(StandardCharsets.UTF_8);
     }
 
     private void logFingerprint(Path ks, char[] pass) {

@@ -40,7 +40,8 @@ public final class HooksListTool implements McpTool {
         } catch (IllegalArgumentException e) {
             return ToolResult.error(e.getMessage());
         }
-        List<Map<String, Object>> all = hookManager.describeHooks();
+        // Nested tool/resource/skipped arrays are bounded too; the manager clamps to its hard cap.
+        List<Map<String, Object>> all = hookManager.describeHooks(maxEntries);
         List<Map<String, Object>> hooks = all.size() > limit ? all.subList(0, limit) : all;
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("count", hooks.size());

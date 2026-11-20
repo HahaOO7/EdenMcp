@@ -32,6 +32,9 @@ import java.util.logging.Logger;
  * <p>All mutating methods are expected to be called on the main server thread.
  */
 public final class HookManager {
+    /** Hard upper bound for nested name arrays returned by {@link #describeHooks()}. */
+    public static final int MAX_DESCRIBED_LIST_ITEMS = 100;
+
     private final ToolRegistry registry;
     private final ResourceRegistry resources;
     private final HookContext context;
@@ -297,7 +300,19 @@ public final class HookManager {
                 .toList();
     }
 
+    /** Descriptors with nested name arrays capped at {@link #MAX_DESCRIBED_LIST_ITEMS}. */
     public List<Map<String, Object>> describeHooks() {
+        return describeHooks(MAX_DESCRIBED_LIST_ITEMS);
+    }
+
+    /**
+     * Descriptors for {@code edenmcp.hooks.list}. Each nested name array ({@code tools},
+     * {@code resources}, {@code skipped}) is bounded by {@code maxItemsPerList}, which can
+     * never exceed the hard cap. Truncation is reported via sibling {@code <name>Count},
+     * {@code <name>Total} and {@code <name>HasMore} entries; original keys stay unchanged.
+     */
+    public List<Map<String, Object>> describeHooks(int maxItemsPerList) {
+        int limit = Math.clamp(maxItemsPerList, 1, MAX_DESCRIBED_LIST_ITEMS);
         return hookInfos().stream().map(info -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", info.id());
@@ -307,12 +322,21 @@ public final class HookManager {
             m.put("enabledInConfig", info.enabledInConfig());
             m.put("available", info.available());
             m.put("enabled", info.enabled());
-            m.put("tools", info.tools());
-            m.put("resources", info.resources());
-            m.put("skipped", info.skipped());
+            putBoundedNames(m, "tools", info.tools(), limit);
+            putBoundedNames(m, "resources", info.resources(), limit);
+            putBoundedNames(m, "skipped", info.skipped(), limit);
             if (info.lastError() != null) m.put("lastError", info.lastError());
             return m;
         }).toList();
+    }
+
+    private static void putBoundedNames(Map<String, Object> target, String key,
+                                        List<String> names, int limit) {
+        List<String> visible = names.size() > limit ? names.subList(0, limit) : names;
+        target.put(key, visible);
+        target.put(key + "Count", visible.size());
+        target.put(key + "Total", names.size());
+        target.put(key + "HasMore", names.size() > visible.size());
     }
 
     private final class HookRegistrationImpl implements HookRegistration {

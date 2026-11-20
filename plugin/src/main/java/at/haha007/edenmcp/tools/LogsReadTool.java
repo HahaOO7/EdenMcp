@@ -122,7 +122,7 @@ public final class LogsReadTool implements McpTool {
         }
     }
 
-    /** Reads the tail from a single open handle for plain files, or bounded full decompression for archives. */
+    /** Reads the tail from a single open handle for plain files, or a bounded tail window for archives. */
     private Tail readTail(Path path, String fileName, int limit,
                           @Nullable String filter, @Nullable Pattern pattern) throws IOException {
         LogFileAccess.Compression compression = LogFileAccess.compressionOf(fileName);
@@ -130,7 +130,7 @@ public final class LogsReadTool implements McpTool {
         if (compression == LogFileAccess.Compression.PLAIN) {
             data = readPlainTail(path);
         } else {
-            LogFileAccess.Decompressed decoded = logs.readCompressed(path, compression);
+            LogFileAccess.Decompressed decoded = logs.readCompressed(path, compression, maxScanBytes);
             data = new TailBytes(decoded.bytes(), decoded.truncated());
         }
         return processLines(data.bytes(), data.truncated(), limit, filter, pattern);

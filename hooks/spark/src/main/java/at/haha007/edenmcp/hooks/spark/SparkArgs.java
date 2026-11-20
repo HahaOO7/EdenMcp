@@ -3,6 +3,7 @@ package at.haha007.edenmcp.hooks.spark;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.Nullable;
 
+import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -19,7 +20,11 @@ final class SparkArgs {
     static @Nullable String string(Map<String, Object> args, String key, Pattern pattern) {
         Object value = args.get(key);
         if (value == null) return null;
-        String text = String.valueOf(value).trim();
+        // JSON strings must actually be strings; never turn another JSON type into command text.
+        if (!(value instanceof String raw)) {
+            throw new IllegalArgumentException("Invalid '" + key + "'");
+        }
+        String text = raw.trim();
         if (!pattern.matcher(text).matches()) {
             throw new IllegalArgumentException("Invalid '" + key + "'");
         }
@@ -39,12 +44,7 @@ final class SparkArgs {
                                      int min, int max) {
         Object value = args.get(key);
         if (value == null) return fallback;
-        long parsed;
-        try {
-            parsed = Long.parseLong(String.valueOf(value).trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid '" + key + "'");
-        }
+        long parsed = integral(value, key);
         if (parsed < min || parsed > max) {
             throw new IllegalArgumentException("'" + key + "' must be between " + min + " and " + max);
         }
@@ -54,12 +54,7 @@ final class SparkArgs {
     static long offset(Map<String, Object> args) {
         Object value = args.get("offset");
         if (value == null) return 0L;
-        long parsed;
-        try {
-            parsed = Long.parseLong(String.valueOf(value).trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid 'offset'");
-        }
+        long parsed = integral(value, "offset");
         if (parsed < 0) {
             throw new IllegalArgumentException("'offset' must be >= 0");
         }
@@ -70,9 +65,6 @@ final class SparkArgs {
         Object value = args.get(key);
         if (value == null) return fallback;
         if (value instanceof Boolean b) return b;
-        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
-        if (text.equals("true") || text.equals("yes") || text.equals("1")) return true;
-        if (text.equals("false") || text.equals("no") || text.equals("0")) return false;
         throw new IllegalArgumentException("Invalid '" + key + "'");
     }
 
@@ -81,11 +73,26 @@ final class SparkArgs {
                                         Set<String> allowed) {
         Object value = args.get(key);
         if (value == null) return fallback;
-        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
+        if (!(value instanceof String raw)) {
+            throw new IllegalArgumentException("Invalid '" + key + "'; allowed: " + String.join(", ", allowed));
+        }
+        String text = raw.trim().toLowerCase(Locale.ROOT);
         if (!allowed.contains(text)) {
             throw new IllegalArgumentException("Invalid '" + key + "'; allowed: " + String.join(", ", allowed));
         }
         return text;
+    }
+
+    /** Requires a real JSON number with an integral value; strings and booleans are rejected. */
+    private static long integral(Object value, String key) {
+        if (!(value instanceof Number number)) {
+            throw new IllegalArgumentException("Invalid '" + key + "'");
+        }
+        try {
+            return new BigDecimal(number.toString()).longValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid '" + key + "'");
+        }
     }
 
     /** Quotes a pre-validated value so Bukkit's dispatcher cannot split it into extra arguments. */
