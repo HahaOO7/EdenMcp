@@ -1,10 +1,13 @@
 package at.haha007.edenmcp.hooks.luckperms;
 
+import at.haha007.edenmcp.api.CapabilityLevel;
 import at.haha007.edenmcp.api.Hook;
 import at.haha007.edenmcp.api.HookContext;
 import at.haha007.edenmcp.api.HookContribution;
 import at.haha007.edenmcp.api.McpResource;
 import at.haha007.edenmcp.api.McpTool;
+import at.haha007.edenmcp.api.SideEffects;
+import at.haha007.edenmcp.api.ToolContext;
 import at.haha007.edenmcp.api.ToolResult;
 import net.luckperms.api.LuckPerms;
 import net.luckperms.api.actionlog.Action;
@@ -57,9 +60,17 @@ public final class LuckPermsHook implements Hook {
                 new LpTracksListTool(),
                 new LpTrackGetTool(),
                 new LpUserGroupsTool(),
-                new LpAuditReadTool()
+                new LpAuditReadTool(),
+                new LpUserPermissionSetTool(),
+                new LpGroupPermissionSetTool(),
+                new LpGroupCreateTool(),
+                new LpUserGroupAddTool(),
+                new LpUserGroupRemoveTool(),
+                new LpGroupMetaSetTool(),
+                new LpUserTrackPromoteTool(),
+                new LpUserTrackDemoteTool()
         );
-        // Mutations deliberately remain unexposed; if added later they must be UNSAFE_ACTION.
+        // Permission mutations are UNSAFE_ACTION and are therefore only available in unsafe mode.
         List<McpResource> resources = List.of(McpResource.text(
                 "edenmcp://luckperms/groups", "LuckPerms groups",
                 "Loaded LuckPerms groups (JSON, read-only).", "application/json",
@@ -91,7 +102,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             User user = LpSupport.requireUser(api, args);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("uuid", user.getUniqueId().toString());
@@ -119,7 +130,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) {
             List<String> groups = api.getGroupManager().getLoadedGroups().stream()
                     .map(Group::getName).sorted().toList();
             return ToolResult.ok(Map.of("groups", groups, "count", groups.size()));
@@ -148,7 +159,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String permission = LpSupport.requiredArg(args, "permission");
             if (permission.length() > 256) {
                 throw new LpSupport.InvalidArgument("permission is too long");
@@ -191,7 +202,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.requiredArg(args, "name");
             int limit = LpSupport.boundedLimitArg(args, LpSupport.MAX_NODES, 500);
             Group group = api.getGroupManager().loadGroup(name).join()
@@ -233,7 +244,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) {
             List<String> tracks = api.getTrackManager().getLoadedTracks().stream()
                     .map(Track::getName).sorted().toList();
             return ToolResult.ok(Map.of("tracks", tracks, "count", tracks.size()));
@@ -260,7 +271,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             String name = LpSupport.requiredArg(args, "name");
             Track track = api.getTrackManager().loadTrack(name).join()
                     .orElseThrow(() -> new LpSupport.InvalidArgument("Track not found"));
@@ -306,7 +317,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             User user = LpSupport.requireUser(api, args);
             QueryOptions query = LpSupport.queryOptions(api, user, args);
             List<String> direct = user.getNodes(NodeType.INHERITANCE).stream()
@@ -347,7 +358,7 @@ public final class LuckPermsHook implements Hook {
         }
 
         @Override
-        protected ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception {
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
             int limit = LpSupport.boundedLimitArg(args, 50, LpSupport.MAX_AUDIT);
             String target = LpSupport.stringArg(args, "target");
             Action.Target.Type type = null;
@@ -390,6 +401,390 @@ public final class LuckPermsHook implements Hook {
             out.put("count", entries.size());
             out.put("limit", limit);
             return ToolResult.ok(out);
+        }
+    }
+
+    /** Common shape for the permission mutation tools. */
+    private abstract static class LpPermissionSetTool extends LpTool {
+        protected LpPermissionSetTool() {
+            super(CapabilityLevel.UNSAFE_ACTION, SideEffects.MUTATING);
+        }
+
+        @Override
+        public String description() {
+            return "Set or remove a LuckPerms permission node (UNSAFE_ACTION).";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            return Map.of("type", "object", "properties", Map.of(
+                    "permission", Map.of("type", "string"),
+                    "value", Map.of("type", "boolean", "description", "false creates a negated node; default true"),
+                    "remove", Map.of("type", "boolean", "description", "remove the matching node instead of setting it"),
+                    "contexts", Map.of("type", "object", "additionalProperties", Map.of("type", "string")),
+                    "expiry", Map.of("type", "string", "description", "ISO-8601 instant; omit for a permanent node")
+            ));
+        }
+    }
+
+    private static final class LpUserPermissionSetTool extends LpPermissionSetTool {
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.user.permission.set";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            Map<String, Object> schema = new LinkedHashMap<>(super.inputSchema());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> properties = new LinkedHashMap<>((Map<String, Object>) schema.get("properties"));
+            properties.put("username", Map.of("type", "string"));
+            properties.put("uuid", Map.of("type", "string"));
+            schema.put("properties", properties);
+            return schema;
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            String permission = LpSupport.keyArg(args, "permission");
+            User user = LpSupport.requireUser(api, args);
+            var contexts = LpSupport.contextSet(args.get("contexts"));
+            boolean remove = LpSupport.boolArg(args, "remove", false);
+            boolean value = LpSupport.boolArg(args, "value", true);
+            int removed = LpSupport.clearPermissionNodes(user, permission, contexts);
+
+            if (!remove) {
+                var result = user.data().add(LpSupport.permissionNode(args));
+                if (!result.wasSuccessful()) {
+                    return ToolResult.error("Could not set permission");
+                }
+            }
+            LpSupport.saveHolder(api, user);
+            LpSupport.audit(api, context.callerId(),
+                    (remove ? "removed permission " : "set permission ") + permission + "=" + value, user);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("target", LpSupport.holderMap(user));
+            out.put("permission", permission);
+            out.put("value", remove ? null : value);
+            out.put("removed", removed);
+            out.put("contexts", contexts.toMap());
+            return ToolResult.ok(out);
+        }
+    }
+
+    private static final class LpGroupPermissionSetTool extends LpPermissionSetTool {
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.group.permission.set";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            Map<String, Object> schema = new LinkedHashMap<>(super.inputSchema());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> properties = new LinkedHashMap<>((Map<String, Object>) schema.get("properties"));
+            properties.put("name", Map.of("type", "string"));
+            schema.put("properties", properties);
+            return schema;
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            String permission = LpSupport.keyArg(args, "permission");
+            Group group = LpSupport.requireGroup(api, LpSupport.nameArg(args, "name"));
+            var contexts = LpSupport.contextSet(args.get("contexts"));
+            boolean remove = LpSupport.boolArg(args, "remove", false);
+            boolean value = LpSupport.boolArg(args, "value", true);
+            int removed = LpSupport.clearPermissionNodes(group, permission, contexts);
+
+            if (!remove) {
+                var result = group.data().add(LpSupport.permissionNode(args));
+                if (!result.wasSuccessful()) {
+                    return ToolResult.error("Could not set permission");
+                }
+            }
+            LpSupport.saveHolder(api, group);
+            LpSupport.audit(api, context.callerId(),
+                    (remove ? "removed permission " : "set permission ") + permission + "=" + value, group);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("target", LpSupport.holderMap(group));
+            out.put("permission", permission);
+            out.put("value", remove ? null : value);
+            out.put("removed", removed);
+            out.put("contexts", contexts.toMap());
+            return ToolResult.ok(out);
+        }
+    }
+
+    private static final class LpGroupCreateTool extends LpTool {
+        private LpGroupCreateTool() {
+            super(CapabilityLevel.UNSAFE_ACTION, SideEffects.MUTATING);
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.group.create";
+        }
+
+        @Override
+        public String description() {
+            return "Create a LuckPerms group (UNSAFE_ACTION).";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            return Map.of("type", "object", "properties", Map.of("name", Map.of("type", "string")));
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            String name = LpSupport.nameArg(args, "name");
+            if (api.getGroupManager().loadGroup(name).join().isPresent()) {
+                return ToolResult.error("Group already exists");
+            }
+            Group group = api.getGroupManager().createAndLoadGroup(name).join();
+            api.getGroupManager().saveGroup(group).join();
+            LpSupport.audit(api, context.callerId(), "created group " + name,
+                    Action.Target.Type.GROUP, group.getName(), null);
+            return ToolResult.ok(Map.of("name", group.getName(), "created", true));
+        }
+    }
+
+    /** Base for adding/removing a user's inherited groups. */
+    private abstract static class LpUserGroupMutationTool extends LpTool {
+        protected LpUserGroupMutationTool(String action) {
+            super(CapabilityLevel.UNSAFE_ACTION, SideEffects.MUTATING);
+            this.action = action;
+        }
+
+        private final String action;
+
+        @Override
+        public String description() {
+            return action + " a LuckPerms user's group inheritance (UNSAFE_ACTION).";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            Map<String, Object> properties = new LinkedHashMap<>();
+            properties.put("username", Map.of("type", "string"));
+            properties.put("uuid", Map.of("type", "string"));
+            properties.put("group", Map.of("type", "string"));
+            properties.put("contexts", Map.of("type", "object", "additionalProperties", Map.of("type", "string")));
+            if (action.equals("Add")) {
+                properties.put("expiry", Map.of("type", "string", "description", "ISO-8601 instant"));
+            }
+            return Map.of("type", "object", "properties", properties);
+        }
+
+        protected ToolResult mutate(LuckPerms api, ToolContext context, Map<String, Object> args, String groupName)
+                throws Exception {
+            User user = LpSupport.requireUser(api, args);
+            var contexts = LpSupport.contextSet(args.get("contexts"));
+            int removed = LpSupport.clearInheritanceNodes(user, groupName, contexts);
+            if (action.equals("Add")) {
+                LpSupport.requireGroup(api, groupName);
+                var result = user.data().add(LpSupport.inheritanceNode(groupName, args));
+                if (!result.wasSuccessful()) {
+                    return ToolResult.error("Could not add group");
+                }
+            }
+            LpSupport.saveHolder(api, user);
+            LpSupport.audit(api, context.callerId(),
+                    action.toLowerCase(Locale.ROOT) + " group " + groupName, user);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("target", LpSupport.holderMap(user));
+            out.put("group", groupName);
+            out.put("removed", removed);
+            out.put("contexts", contexts.toMap());
+            return ToolResult.ok(out);
+        }
+    }
+
+    private static final class LpUserGroupAddTool extends LpUserGroupMutationTool {
+        private LpUserGroupAddTool() {
+            super("Add");
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.user.group.add";
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            return mutate(api, context, args, LpSupport.nameArg(args, "group"));
+        }
+    }
+
+    private static final class LpUserGroupRemoveTool extends LpUserGroupMutationTool {
+        private LpUserGroupRemoveTool() {
+            super("Remove");
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.user.group.remove";
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            return mutate(api, context, args, LpSupport.nameArg(args, "group"));
+        }
+    }
+
+    private static final class LpGroupMetaSetTool extends LpTool {
+        private LpGroupMetaSetTool() {
+            super(CapabilityLevel.UNSAFE_ACTION, SideEffects.MUTATING);
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.group.meta.set";
+        }
+
+        @Override
+        public String description() {
+            return "Set a LuckPerms group's meta, prefix or suffix (UNSAFE_ACTION).";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            return Map.of("type", "object", "properties", Map.of(
+                    "name", Map.of("type", "string"),
+                    "key", Map.of("type", "string", "description", "required for type META"),
+                    "value", Map.of("type", "string"),
+                    "type", Map.of("type", "string", "enum", List.of("META", "PREFIX", "SUFFIX")),
+                    "priority", Map.of("type", "integer", "minimum", -100, "maximum", 100),
+                    "contexts", Map.of("type", "object", "additionalProperties", Map.of("type", "string"))
+            ));
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            Group group = LpSupport.requireGroup(api, LpSupport.nameArg(args, "name"));
+            String value = LpSupport.keyArg(args, "value");
+            String type = LpSupport.stringArg(args, "type");
+            if (type == null || type.isEmpty()) type = "META";
+            type = type.toUpperCase(Locale.ROOT);
+
+            var contexts = LpSupport.contextSet(args.get("contexts"));
+            int removed;
+            var nodeBuilderResult = switch (type) {
+                case "PREFIX", "SUFFIX" -> {
+                    int priority = LpSupport.intArg(args, "priority", 0, -100, 100);
+                    if (type.equals("PREFIX")) {
+                        removed = LpSupport.clearNodes(group, node -> node instanceof net.luckperms.api.node.types.PrefixNode
+                                && node.getContexts().equals(contexts));
+                        yield LpSupport.prefixNode(value, priority, args);
+                    }
+                    removed = LpSupport.clearNodes(group, node -> node instanceof net.luckperms.api.node.types.SuffixNode
+                            && node.getContexts().equals(contexts));
+                    yield LpSupport.suffixNode(value, priority, args);
+                }
+                case "META" -> {
+                    String key = LpSupport.keyArg(args, "key");
+                    removed = LpSupport.clearMetaNodes(group, key, contexts);
+                    yield LpSupport.metaNode(key, value, args);
+                }
+                default -> throw new LpSupport.InvalidArgument("Invalid type");
+            };
+
+            var result = group.data().add(nodeBuilderResult);
+            if (!result.wasSuccessful()) {
+                return ToolResult.error("Could not set meta");
+            }
+            LpSupport.saveHolder(api, group);
+            LpSupport.audit(api, context.callerId(), "set " + type.toLowerCase(Locale.ROOT) + " " + value, group);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("target", LpSupport.holderMap(group));
+            out.put("type", type);
+            out.put("value", value);
+            out.put("replaced", removed);
+            out.put("contexts", contexts.toMap());
+            return ToolResult.ok(out);
+        }
+    }
+
+    /** Shared implementation for user track promotion/demotion. */
+    private abstract static class LpUserTrackMutationTool extends LpTool {
+        protected LpUserTrackMutationTool(String action) {
+            super(CapabilityLevel.UNSAFE_ACTION, SideEffects.MUTATING);
+            this.action = action;
+        }
+
+        private final String action;
+
+        @Override
+        public String description() {
+            return action + " a LuckPerms user on a track (UNSAFE_ACTION).";
+        }
+
+        @Override
+        public Map<String, Object> inputSchema() {
+            return Map.of("type", "object", "properties", Map.of(
+                    "username", Map.of("type", "string"),
+                    "uuid", Map.of("type", "string"),
+                    "track", Map.of("type", "string"),
+                    "contexts", Map.of("type", "object", "additionalProperties", Map.of("type", "string"))
+            ));
+        }
+
+        protected ToolResult mutate(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            User user = LpSupport.requireUser(api, args);
+            Track track = LpSupport.requireTrack(api, LpSupport.nameArg(args, "track"));
+            var contexts = LpSupport.contextSet(args.get("contexts"));
+            net.luckperms.api.util.Result result = action.equals("Promote")
+                    ? track.promote(user, contexts) : track.demote(user, contexts);
+            if (!result.wasSuccessful()) {
+                return ToolResult.error(action + " failed");
+            }
+            LpSupport.saveHolder(api, user);
+            LpSupport.audit(api, context.callerId(),
+                    action.toLowerCase(Locale.ROOT) + " on track " + track.getName(),
+                    Action.Target.Type.TRACK, track.getName(), null);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("user", LpSupport.holderMap(user));
+            out.put("track", track.getName());
+            out.put("groups", List.copyOf(track.getGroups()));
+            return ToolResult.ok(out);
+        }
+    }
+
+    private static final class LpUserTrackPromoteTool extends LpUserTrackMutationTool {
+        private LpUserTrackPromoteTool() {
+            super("Promote");
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.user.track.promote";
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            return mutate(api, context, args);
+        }
+    }
+
+    private static final class LpUserTrackDemoteTool extends LpUserTrackMutationTool {
+        private LpUserTrackDemoteTool() {
+            super("Demote");
+        }
+
+        @Override
+        public String name() {
+            return "edenmcp.luckperms.user.track.demote";
+        }
+
+        @Override
+        protected ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception {
+            return mutate(api, context, args);
         }
     }
 }

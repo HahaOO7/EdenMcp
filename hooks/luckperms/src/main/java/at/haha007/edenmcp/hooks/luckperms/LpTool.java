@@ -10,16 +10,28 @@ import net.luckperms.api.LuckPerms;
 import java.util.List;
 import java.util.Map;
 
-/** Base class for the read-only LuckPerms tools. */
+/** Base class for the LuckPerms tools, with shared classification and error handling. */
 abstract class LpTool implements McpTool {
+    private final CapabilityLevel level;
+    private final SideEffects sideEffects;
+
+    protected LpTool() {
+        this(CapabilityLevel.SAFE_READ, SideEffects.NONE);
+    }
+
+    protected LpTool(CapabilityLevel level, SideEffects sideEffects) {
+        this.level = level;
+        this.sideEffects = sideEffects;
+    }
+
     @Override
     public final CapabilityLevel level() {
-        return CapabilityLevel.SAFE_READ;
+        return level;
     }
 
     @Override
     public final SideEffects sideEffects() {
-        return SideEffects.NONE;
+        return sideEffects;
     }
 
     @Override
@@ -29,8 +41,9 @@ abstract class LpTool implements McpTool {
 
     @Override
     public final ToolResult execute(ToolContext context) {
+        Map<String, Object> args = context.arguments() == null ? Map.of() : context.arguments();
         try {
-            return run(LpSupport.api(), context.arguments() == null ? Map.of() : context.arguments());
+            return run(LpSupport.api(), context, args);
         } catch (LpSupport.InvalidArgument e) {
             return ToolResult.error(e.getMessage());
         } catch (Throwable t) {
@@ -39,5 +52,5 @@ abstract class LpTool implements McpTool {
         }
     }
 
-    protected abstract ToolResult run(LuckPerms api, Map<String, Object> args) throws Exception;
+    protected abstract ToolResult run(LuckPerms api, ToolContext context, Map<String, Object> args) throws Exception;
 }

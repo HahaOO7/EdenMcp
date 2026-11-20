@@ -124,6 +124,8 @@ val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
         val pluginsDir = dir.resolve("plugins")
         val edenDir = pluginsDir.resolve("EdenMcp")
         edenDir.mkdirs()
+        // LuckPerms persists group/user data in its plugin folder; clear it so integration tests are deterministic.
+        pluginsDir.resolve("LuckPerms").deleteRecursively()
 
         dir.resolve("eula.txt").writeText("eula=true\n")
         dir.resolve("server.properties").writeText(

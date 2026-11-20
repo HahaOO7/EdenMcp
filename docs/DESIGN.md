@@ -100,6 +100,7 @@ Suggested mapping:
 - `edenmcp.hooks.list` – server-provided hooks and their availability/enabled state (read-only discovery).
 - `edenmcp.mode.get` – current operating mode.
 - Hook-provided read tools (e.g. LuckPerms user, permission, group, track and audit lookups) when available.
+- Hook-provided privileged mutations (e.g. LuckPerms permission/group/track changes) when classified `UNSAFE_ACTION` and allowed by policy.
 - Spark (`SAFE_READ`): `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc`, `edenmcp.spark.profiler.info`, and `edenmcp.spark.data.list`/`read`/`inspect` for bounded access to locally saved raw profile/heap files. Raw protobuf inspection is schema-free and done locally; no data is uploaded.
 
 ### Moderate tools
@@ -160,7 +161,9 @@ record HookContribution(List<McpTool> tools, List<McpResource> resources) {}
 
 **Availability:** LuckPerms API present.
 
-The hook contributes read-only (`SAFE_READ`) tools: `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.user.permission.check`, `edenmcp.luckperms.user.groups`, `edenmcp.luckperms.groups.list`, `edenmcp.luckperms.group.get`, `edenmcp.luckperms.tracks.list`, `edenmcp.luckperms.track.get` and `edenmcp.luckperms.audit.read`, plus the `edenmcp://luckperms/groups` resource. Results are bounded (node/audit limits). Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
+The hook contributes read-only (`SAFE_READ`) tools: `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.user.permission.check`, `edenmcp.luckperms.user.groups`, `edenmcp.luckperms.groups.list`, `edenmcp.luckperms.group.get`, `edenmcp.luckperms.tracks.list`, `edenmcp.luckperms.track.get` and `edenmcp.luckperms.audit.read`, plus the `edenmcp://luckperms/groups` resource. Results are bounded (node/audit limits).
+
+It also contributes privileged mutation tools classified `UNSAFE_ACTION` (and therefore only available in `unsafe` mode, consistent with the built-in hook's server-authoritative policy): `edenmcp.luckperms.user.permission.set`, `edenmcp.luckperms.group.permission.set`, `edenmcp.luckperms.group.create`, `edenmcp.luckperms.user.group.add`, `edenmcp.luckperms.user.group.remove`, `edenmcp.luckperms.group.meta.set`, `edenmcp.luckperms.user.track.promote`, and `edenmcp.luckperms.user.track.demote`. These validate inputs, persist changes through LuckPerms, and record audit entries via LuckPerms' action logger (tagged with the MCP caller id).
 
 ### Example: Spark (`hooks:spark`)
 

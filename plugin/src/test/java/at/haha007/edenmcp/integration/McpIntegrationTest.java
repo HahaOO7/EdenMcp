@@ -165,6 +165,14 @@ public class McpIntegrationTest {
         assertTrue(hasTool(tools, "edenmcp.luckperms.track.get"), "LuckPerms hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.luckperms.user.groups"), "LuckPerms hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.luckperms.audit.read"), "LuckPerms hook should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.permission.set"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.group.permission.set"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.group.create"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.group.add"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.group.remove"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.group.meta.set"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.track.promote"), "LuckPerms mutations should be available: " + tools);
+        assertTrue(hasTool(tools, "edenmcp.luckperms.user.track.demote"), "LuckPerms mutations should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.cpu"), "Spark hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.tps"), "Spark hook should be available: " + tools);
         assertTrue(hasTool(tools, "edenmcp.spark.stats.mspt"), "Spark hook should be available: " + tools);
@@ -330,6 +338,10 @@ public class McpIntegrationTest {
         assertFalse(hasTool(safeTools, "edenmcp.chat.send"), "chat.send must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "edenmcp.spark.profiler.control"),
                 "Spark profiler control must be hidden in safe mode");
+        assertFalse(hasTool(safeTools, "edenmcp.luckperms.user.permission.set"),
+                "LuckPerms mutations must be hidden in safe mode");
+        assertFalse(hasTool(safeTools, "edenmcp.luckperms.group.create"),
+                "LuckPerms mutations must be hidden in safe mode");
         assertTrue(hasTool(safeTools, "edenmcp.spark.stats.cpu"),
                 "Spark read-only stats must remain visible in safe mode");
 
@@ -652,6 +664,96 @@ public class McpIntegrationTest {
             assertTrue(entry.has("target"), entry.toString());
             assertTrue(entry.has("description"), entry.toString());
         }
+    }
+
+    @Test
+    @Order(34)
+    void toolLuckPermsUserPermissionSet() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.permission.set",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "permission", "edenmcp.it.check", "value", true),
+                197);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertEquals("edenmcp.it.check", payload.get("permission").getAsString(), payload.toString());
+        assertTrue(payload.get("value").getAsBoolean(), payload.toString());
+    }
+
+    @Test
+    @Order(35)
+    void toolLuckPermsGroupCreate() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.group.create", jsonObj("name", "it-perm-group"), 198);
+        if (res.get("isError").getAsBoolean()) {
+            // Integration server state can persist between test runs; tolerate an existing group.
+            assertEquals("Group already exists", payloadJson(res).get("error").getAsString(), res.toString());
+        } else {
+            assertEquals("it-perm-group", payloadJson(res).get("name").getAsString(), res.toString());
+        }
+
+        JsonObject duplicate = toolCall("edenmcp.luckperms.group.create", jsonObj("name", "it-perm-group"), 199);
+        assertTrue(duplicate.get("isError").getAsBoolean(), duplicate.toString());
+        assertEquals("Group already exists", payloadJson(duplicate).get("error").getAsString(), duplicate.toString());
+    }
+
+    @Test
+    @Order(36)
+    void toolLuckPermsGroupPermissionSet() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.group.permission.set",
+                args("name", "it-perm-group", "permission", "edenmcp.it.group", "value", true), 200);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        assertEquals("edenmcp.it.group", payloadJson(res).get("permission").getAsString(), res.toString());
+    }
+
+    @Test
+    @Order(37)
+    void toolLuckPermsUserGroupAdd() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.group.add",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "group", "it-perm-group"), 201);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        assertEquals("it-perm-group", payloadJson(res).get("group").getAsString(), res.toString());
+    }
+
+    @Test
+    @Order(38)
+    void toolLuckPermsUserGroupsAfterAdd() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.groups",
+                jsonObj("uuid", "00000000-0000-0000-0000-000000000000"), 202);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertTrue(payload.getAsJsonArray("directGroups").toString().contains("it-perm-group"), payload.toString());
+    }
+
+    @Test
+    @Order(39)
+    void toolLuckPermsUserGroupRemove() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.user.group.remove",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "group", "it-perm-group"), 203);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        assertEquals(1, payloadJson(res).get("removed").getAsInt(), res.toString());
+    }
+
+    @Test
+    @Order(40)
+    void toolLuckPermsGroupMetaSet() throws Exception {
+        JsonObject res = toolCall("edenmcp.luckperms.group.meta.set",
+                args("name", "it-perm-group", "key", "it-key", "value", "it-value"), 204);
+        assertFalse(res.get("isError").getAsBoolean(), res.toString());
+        JsonObject payload = payloadJson(res);
+        assertEquals("META", payload.get("type").getAsString(), payload.toString());
+        assertEquals("it-value", payload.get("value").getAsString(), payload.toString());
+    }
+
+    @Test
+    @Order(41)
+    void toolLuckPermsUserTrackMissingTrack() throws Exception {
+        JsonObject promote = toolCall("edenmcp.luckperms.user.track.promote",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "track", "missing-track-it"), 205);
+        assertTrue(promote.get("isError").getAsBoolean(), promote.toString());
+        assertEquals("Track not found", payloadJson(promote).get("error").getAsString(), promote.toString());
+
+        JsonObject demote = toolCall("edenmcp.luckperms.user.track.demote",
+                args("uuid", "00000000-0000-0000-0000-000000000000", "track", "missing-track-it"), 206);
+        assertTrue(demote.get("isError").getAsBoolean(), demote.toString());
+        assertEquals("Track not found", payloadJson(demote).get("error").getAsString(), demote.toString());
     }
 
     @Test

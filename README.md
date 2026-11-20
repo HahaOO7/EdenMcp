@@ -125,6 +125,7 @@ Moderate:
 Unsafe:
 
 - `edenmcp.command.dispatch` — execute a console command (strongly audited; cannot be reclassified below `unsafe`)
+- `edenmcp.luckperms.user.permission.set`, `edenmcp.luckperms.group.permission.set`, `edenmcp.luckperms.group.create`, `edenmcp.luckperms.user.group.add`, `edenmcp.luckperms.user.group.remove`, `edenmcp.luckperms.group.meta.set`, `edenmcp.luckperms.user.track.promote`, `edenmcp.luckperms.user.track.demote` — LuckPerms mutations (only in `unsafe` mode; audited in LuckPerms' action log)
 
 ## Project structure
 
