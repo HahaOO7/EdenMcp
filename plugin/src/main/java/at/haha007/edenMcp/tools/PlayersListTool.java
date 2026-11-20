@@ -7,6 +7,7 @@ import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
@@ -33,7 +34,7 @@ public final class PlayersListTool implements McpTool {
         return ToolResult.ok(Map.of("count", list.size(), "players", list));
     }
 
-    private Object tryPing(Player p) {
+    private @Nullable Object tryPing(Player p) {
         try { return p.getPing(); } catch (Throwable t) { return null; }
     }
 }

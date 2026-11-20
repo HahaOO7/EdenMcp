@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.core.resource;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -14,12 +16,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ResourceRegistry {
     private final Map<String, McpResource> resources = new ConcurrentHashMap<>();
 
-    public synchronized void register(McpResource resource) {
-        if (resource == null || resource.uri() == null || resource.uri().isBlank()) return;
+    public synchronized void register(@Nullable McpResource resource) {
+        if (resource == null || resource.uri().isBlank()) return;
         resources.put(resource.uri(), resource);
     }
 
-    public synchronized void unregister(String uri) {
+    public synchronized void unregister(@Nullable String uri) {
         if (uri != null) resources.remove(uri);
     }
 
@@ -27,10 +29,10 @@ public final class ResourceRegistry {
      * Removes {@code resource} only when this registry still holds that exact instance,
      * so a failed hook cannot remove a same-URI resource contributed elsewhere.
      */
-    public synchronized boolean unregisterIfRegistered(McpResource resource) {
+    public synchronized boolean unregisterIfRegistered(@Nullable McpResource resource) {
         if (resource == null) return false;
         String uri = resource.uri();
-        if (uri == null || resources.get(uri) != resource) return false;
+        if (resources.get(uri) != resource) return false;
         resources.remove(uri);
         return true;
     }
@@ -39,7 +41,7 @@ public final class ResourceRegistry {
         resources.keySet().removeIf(k -> k.startsWith(prefix));
     }
 
-    public Optional<McpResource> get(String uri) {
+    public Optional<McpResource> get(@Nullable String uri) {
         return Optional.ofNullable(uri == null ? null : resources.get(uri));
     }
 

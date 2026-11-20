@@ -1,5 +1,8 @@
 package at.haha007.edenMcp.hooks.spark;
 
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.Nullable;
+
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -13,7 +16,7 @@ final class SparkArgs {
     private SparkArgs() {
     }
 
-    static String string(Map<String, Object> args, String key, Pattern pattern) {
+    static @Nullable String string(Map<String, Object> args, String key, Pattern pattern) {
         Object value = args.get(key);
         if (value == null) return null;
         String text = String.valueOf(value).trim();
@@ -23,15 +26,17 @@ final class SparkArgs {
         return text;
     }
 
-    static String optionalText(Map<String, Object> args) {
+    static @Nullable String optionalText(Map<String, Object> args) {
         return string(args, "comment", TEXT);
     }
 
-    static String optionalThread(Map<String, Object> args) {
+    static @Nullable String optionalThread(Map<String, Object> args) {
         return string(args, "thread", THREAD);
     }
 
-    static Integer integer(Map<String, Object> args, String key, Integer fallback, int min, int max) {
+    @Contract("_, _, !null, _, _ -> !null")
+    static @Nullable Integer integer(Map<String, Object> args, String key, @Nullable Integer fallback,
+                                     int min, int max) {
         Object value = args.get(key);
         if (value == null) return fallback;
         long parsed;
@@ -71,7 +76,9 @@ final class SparkArgs {
         throw new IllegalArgumentException("Invalid '" + key + "'");
     }
 
-    static String enumeration(Map<String, Object> args, String key, String fallback, Set<String> allowed) {
+    @Contract("_, _, !null, _ -> !null")
+    static @Nullable String enumeration(Map<String, Object> args, String key, @Nullable String fallback,
+                                        Set<String> allowed) {
         Object value = args.get(key);
         if (value == null) return fallback;
         String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);

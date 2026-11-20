@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -105,11 +106,11 @@ class SparkProfilerToolTest {
     void executeReturnsErrorsBeforeDispatchingACommand() {
         ToolResult missingAction = tool.execute(context(Map.of()));
         assertFalse(missingAction.success());
-        assertTrue(missingAction.error().contains("action"));
+        assertTrue(Objects.requireNonNull(missingAction.error()).contains("action"));
 
         ToolResult badMode = tool.execute(context(args("action", "start", "mode", "upload")));
         assertFalse(badMode.success());
-        assertTrue(badMode.error().contains("mode"));
+        assertTrue(Objects.requireNonNull(badMode.error()).contains("mode"));
 
         ToolResult badComment = tool.execute(context(args("action", "stop", "comment", "$(id)")));
         assertFalse(badComment.success());

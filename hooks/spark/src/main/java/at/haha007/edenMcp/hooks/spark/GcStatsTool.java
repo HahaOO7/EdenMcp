@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.hooks.spark;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,7 +42,7 @@ final class GcStatsTool extends SparkStatsTool {
     }
 
     @Override
-    protected Map<String, Object> poll(String window) throws Exception {
+    protected Map<String, Object> poll(@Nullable String window) throws Exception {
         return sparkApi.gc();
     }
 }

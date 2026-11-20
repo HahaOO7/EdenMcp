@@ -5,6 +5,7 @@ import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,9 +18,9 @@ final class SparkProfilerTool implements McpTool {
     private static final Set<String> MODES = Set.of("cpu", "alloc", "lock");
 
     private final SparkCommandRunner runner;
-    private final SparkDataStore store;
+    @Nullable private final SparkDataStore store;
 
-    SparkProfilerTool(SparkCommandRunner runner, SparkDataStore store) {
+    SparkProfilerTool(SparkCommandRunner runner, @Nullable SparkDataStore store) {
         this.runner = runner;
         this.store = store;
     }
@@ -145,6 +146,7 @@ final class SparkProfilerTool implements McpTool {
     }
 
     private List<Map<String, Object>> recentProfiles() {
+        if (store == null) return List.of();
         try {
             return store.list("profile", 3);
         } catch (Exception e) {

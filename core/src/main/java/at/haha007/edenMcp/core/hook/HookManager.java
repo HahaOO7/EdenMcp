@@ -5,6 +5,7 @@ import at.haha007.edenMcp.core.resource.ResourceRegistry;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolRegistry;
 import org.bukkit.Server;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -135,7 +136,8 @@ public final class HookManager {
                 .toList();
     }
 
-    private record HookState(EdenHook hook, boolean enabledInConfig, boolean available, boolean enabled, HookContribution contribution) {
+    private record HookState(EdenHook hook, boolean enabledInConfig, boolean available, boolean enabled,
+                             @Nullable HookContribution contribution) {
         HookState(EdenHook hook, boolean enabledInConfig, boolean available, HookContribution contribution) {
             this(hook, enabledInConfig, available, contribution != null, contribution);
         }

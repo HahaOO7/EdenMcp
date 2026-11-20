@@ -1,6 +1,7 @@
 package at.haha007.edenMcp.core.auth;
 
 import at.haha007.edenMcp.core.util.PrivateFileUtil;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -29,7 +30,7 @@ public final class AccessKeyManager {
     private static final Pattern KEY_FORMAT = Pattern.compile("[0-9a-f]{64}");
 
     private final Path keyFile;
-    private final Path keysDir;
+    @Nullable private final Path keysDir;
     private final int graceSeconds;
     private final Logger logger;
     private final Map<String, KeyEntry> keys = new ConcurrentHashMap<>();
@@ -38,7 +39,7 @@ public final class AccessKeyManager {
         this(keyFile, logger, 0, null);
     }
 
-    public AccessKeyManager(Path keyFile, Logger logger, int graceSeconds, Path keysDir) {
+    public AccessKeyManager(Path keyFile, Logger logger, int graceSeconds, @Nullable Path keysDir) {
         this.keyFile = keyFile;
         this.logger = logger;
         this.graceSeconds = Math.max(0, graceSeconds);
@@ -175,18 +176,18 @@ public final class AccessKeyManager {
      * matched key, or {@code null} when no key matches. Expired grace keys are
      * pruned before matching.
      */
-    public Principal authenticate(String presented) {
+    public @Nullable Principal authenticate(@Nullable String presented) {
         if (presented == null) return null;
         byte[] p = presented.getBytes(StandardCharsets.UTF_8);
         pruneExpired();
         for (Map.Entry<String, KeyEntry> e : keys.entrySet()) {
-            if (MessageDigest.isEqual(e.getValue().material, p)) return e.getValue().principal;
+            if (MessageDigest.isEqual(e.getValue().material(), p)) return e.getValue().principal();
         }
         return null;
     }
 
     /** Backwards-compatible boolean form. */
-    public boolean verify(String presented) {
+    public boolean verify(@Nullable String presented) {
         return authenticate(presented) != null;
     }
 
@@ -200,7 +201,7 @@ public final class AccessKeyManager {
         KeyEntry current = keys.get(Principal.PRIMARY_ID);
         if (current == null) throw new IOException("No primary access key is loaded");
 
-        String oldKey = new String(current.material, StandardCharsets.UTF_8);
+        String oldKey = new String(current.material(), StandardCharsets.UTF_8);
         String newKey = randomKey();
         // Write first: if this fails, the old key remains fully active.
         writeKey(newKey);
@@ -222,7 +223,7 @@ public final class AccessKeyManager {
     }
 
     /** Revoke an additional/grace key by id. The primary key cannot be removed this way. */
-    public boolean revoke(String id) {
+    public boolean revoke(@Nullable String id) {
         if (id == null || Principal.PRIMARY_ID.equals(id)) return false;
         return keys.remove(id) != null;
     }
@@ -235,7 +236,7 @@ public final class AccessKeyManager {
     /** Log-safe descriptions of active keys; never includes key material. */
     public List<String> describeKeys() {
         pruneExpired();
-        return keys.values().stream().map(e -> e.principal.display()).sorted().toList();
+        return keys.values().stream().map(e -> e.principal().display()).sorted().toList();
     }
 
     private void pruneExpired() {
@@ -243,17 +244,7 @@ public final class AccessKeyManager {
         keys.entrySet().removeIf(e -> e.getValue().expired(now));
     }
 
-    private static final class KeyEntry {
-        private final byte[] material;
-        private final Principal principal;
-        private final long expiresAt;
-
-        KeyEntry(byte[] material, Principal principal, long expiresAt) {
-            this.material = material;
-            this.principal = principal;
-            this.expiresAt = expiresAt;
-        }
-
+    private record KeyEntry(byte[] material, Principal principal, long expiresAt) {
         boolean expired(long now) {
             return expiresAt > 0 && now >= expiresAt;
         }

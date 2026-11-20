@@ -8,6 +8,7 @@ import at.haha007.edenMcp.core.policy.SecurityPolicy;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Locale;
@@ -18,11 +19,11 @@ import java.util.function.Consumer;
 public final class ModeSetTool implements McpTool {
     private final AtomicReference<OperatingMode> mode;
     private final AuditLogger audit;
-    private final Consumer<OperatingMode> onChange;
+    @Nullable private final Consumer<OperatingMode> onChange;
     private final SecurityPolicy securityPolicy;
 
     public ModeSetTool(AtomicReference<OperatingMode> mode, AuditLogger audit,
-                       Consumer<OperatingMode> onChange, SecurityPolicy securityPolicy) {
+                       @Nullable Consumer<OperatingMode> onChange, SecurityPolicy securityPolicy) {
         this.mode = mode;
         this.audit = audit;
         this.onChange = onChange;

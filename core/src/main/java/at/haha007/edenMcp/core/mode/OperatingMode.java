@@ -1,13 +1,14 @@
 package at.haha007.edenMcp.core.mode;
 
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
+import org.jetbrains.annotations.Nullable;
 
 public enum OperatingMode {
     SAFE,
     MODERATE,
     UNSAFE;
 
-    public static OperatingMode parse(String value, OperatingMode fallback) {
+    public static @Nullable OperatingMode parse(@Nullable String value, @Nullable OperatingMode fallback) {
         if (value == null) return fallback;
         try {
             return OperatingMode.valueOf(value.trim().toUpperCase());

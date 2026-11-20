@@ -22,21 +22,23 @@ import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.kyori.adventure.text.Component;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public final class EdenMcpPlugin extends JavaPlugin {
-    private McpHttpServer httpServer;
-    private HookManager hookManager;
-    private AuditLogger audit;
-    private AccessKeyManager keyManager;
-    private CommandDispatchTool commandDispatchTool;
+    @Nullable private McpHttpServer httpServer;
+    @Nullable private HookManager hookManager;
+    @Nullable private AuditLogger audit;
+    @Nullable private AccessKeyManager keyManager;
+    @Nullable private CommandDispatchTool commandDispatchTool;
     private final AtomicReference<OperatingMode> modeRef = new AtomicReference<>(OperatingMode.SAFE);
 
     @Override
@@ -171,7 +173,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
                     .then(Commands.literal("key")
                             .then(Commands.literal("rotate").executes(ctx -> {
                                 try {
-                                    var result = keyManager.rotate();
+                                    var result = Objects.requireNonNull(keyManager, "keyManager").rotate();
                                     int closed = httpServer != null
                                             ? httpServer.invalidateSessionsForPrincipal(result.invalidatedPrincipalId()) : 0;
                                     if (audit != null) {
@@ -251,7 +253,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
         return root;
     }
 
-    private Object sectionToMap(Object obj) {
+    private @Nullable Object sectionToMap(@Nullable Object obj) {
         return switch (obj) {
             case null -> null;
             case org.bukkit.configuration.ConfigurationSection sec -> {

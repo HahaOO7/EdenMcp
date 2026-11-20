@@ -1,6 +1,7 @@
 package at.haha007.edenMcp.core.tool;
 
 import at.haha007.edenMcp.core.mode.OperatingMode;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -8,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ToolRegistry {
     private final Map<String, McpTool> tools = new ConcurrentHashMap<>();
 
-    public synchronized void register(McpTool tool) {
+    public synchronized void register(@Nullable McpTool tool) {
         if (tool == null || tool.name() == null) return;
         tools.put(tool.name(), tool);
     }
@@ -22,7 +23,7 @@ public final class ToolRegistry {
      * Used for rollback so a failed hook cannot remove a same-named tool that was
      * contributed by another source.
      */
-    public synchronized boolean unregisterIfRegistered(McpTool tool) {
+    public synchronized boolean unregisterIfRegistered(@Nullable McpTool tool) {
         if (tool == null) return false;
         String name = tool.name();
         if (name == null || tools.get(name) != tool) return false;

@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.core.audit;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.time.Instant;
 import java.util.logging.Logger;
 
@@ -22,20 +24,22 @@ public final class AuditLogger {
     public void setLogToolCalls(boolean logToolCalls) { this.logToolCalls = logToolCalls; }
     public void setLogModeChanges(boolean logModeChanges) { this.logModeChanges = logModeChanges; }
 
-    public void toolCall(String caller, String tool, String mode, boolean success, String outcome) {
+    public void toolCall(@Nullable String caller, String tool, String mode, boolean success,
+                         @Nullable String outcome) {
         if (!logToolCalls) return;
         logger.info("[AUDIT] tool ts=" + Instant.now() + " caller=" + safe(caller) + " tool=" + tool
                 + " mode=" + mode + " success=" + success + " outcome=" + safe(outcome));
     }
 
     /** Resource reads are audited under the same toggle as tool calls. */
-    public void resourceRead(String caller, String uri, String mode, boolean success, String outcome) {
+    public void resourceRead(@Nullable String caller, @Nullable String uri, String mode, boolean success,
+                             @Nullable String outcome) {
         if (!logToolCalls) return;
         logger.info("[AUDIT] resource ts=" + Instant.now() + " caller=" + safe(caller) + " uri=" + safe(uri)
                 + " mode=" + mode + " success=" + success + " outcome=" + safe(outcome));
     }
 
-    public void modeChange(String caller, String previous, String next) {
+    public void modeChange(@Nullable String caller, String previous, @Nullable String next) {
         if (!logModeChanges) return;
         logger.warning("[AUDIT] mode-change ts=" + Instant.now() + " caller=" + safe(caller)
                 + " previous=" + previous + " next=" + next);
@@ -44,17 +48,17 @@ public final class AuditLogger {
         }
     }
 
-    public void authFailure(String caller) {
+    public void authFailure(@Nullable String caller) {
         logger.warning("[AUDIT] auth-failure ts=" + Instant.now() + " caller=" + safe(caller));
     }
 
     /** Records a key rotation by id only; key material must never reach the log. */
-    public void keyRotate(String caller, String keyId) {
+    public void keyRotate(@Nullable String caller, @Nullable String keyId) {
         logger.warning("[AUDIT] key-rotate ts=" + Instant.now() + " caller=" + safe(caller)
                 + " keyId=" + safe(keyId));
     }
 
-    private String safe(String s) {
+    private String safe(@Nullable String s) {
         if (s == null) return "?";
         String cleaned = s.replaceAll("[\r\n]", " ");
         return cleaned.length() > maxValueLength ? cleaned.substring(0, maxValueLength) + "..." : cleaned;

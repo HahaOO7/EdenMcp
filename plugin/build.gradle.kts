@@ -1,3 +1,4 @@
+import java.io.File
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -35,11 +36,13 @@ val integrationServerDirProvider = layout.buildDirectory.dir("integration-server
 val luckPermsPluginJarProvider = layout.buildDirectory.file("integration-libs/LuckPerms-Bukkit.jar")
 
 val downloadLuckPerms = tasks.register("downloadLuckPerms") {
+    description = "Downloads the pinned LuckPerms plugin jar used by the integration tests."
+    group = "verification"
     val out = luckPermsPluginJarProvider.get().asFile
     val expectedSha = providers.gradleProperty("luckPermsSha256").get().lowercase()
     outputs.file(out)
     doLast {
-        fun sha256(file: java.io.File): String =
+        fun sha256(file: File): String =
             MessageDigest.getInstance("SHA-256")
                 .digest(file.readBytes())
                 .joinToString("") { "%02x".format(it) }
@@ -77,7 +80,7 @@ val downloadIntegrationPaper = tasks.register("downloadIntegrationPaper") {
     inputs.property("sha256", expectedSha)
     outputs.file(out)
     doLast {
-        fun sha256(file: java.io.File): String =
+        fun sha256(file: File): String =
             MessageDigest.getInstance("SHA-256")
                 .digest(file.readBytes())
                 .joinToString("") { "%02x".format(it) }
@@ -106,6 +109,8 @@ val downloadIntegrationPaper = tasks.register("downloadIntegrationPaper") {
 }
 
 val prepareIntegrationServer = tasks.register("prepareIntegrationServer") {
+    description = "Assembles the Paper integration-test server directory with the plugin jars and config."
+    group = "verification"
     val lpFile = layout.buildDirectory.file("integration-libs/LuckPerms-Bukkit.jar")
     val serverDir = layout.buildDirectory.dir("integration-server")
     val shadowJarFile = layout.buildDirectory.file("libs/plugin-${project.version}-all.jar")

@@ -4,7 +4,7 @@ plugins {
 }
 
 subprojects {
-    apply(plugin = "java-library")
+    pluginManager.apply("java-library")
 
     group = rootProject.property("group") as String
     version = rootProject.property("version") as String
@@ -12,6 +12,17 @@ subprojects {
     repositories {
         mavenCentral()
         maven("https://repo.papermc.io/repository/maven-public/")
+    }
+
+    dependencies.add("compileOnly", "org.jetbrains:annotations:26.1.0")
+
+    configurations.configureEach {
+        resolutionStrategy.force(
+            "com.google.guava:guava:33.8.0-jre",
+            "org.apache.logging.log4j:log4j-api:2.26.1",
+            "org.codehaus.plexus:plexus-utils:3.6.1",
+            "org.apache.commons:commons-lang3:3.18.0"
+        )
     }
 
     extensions.configure<JavaPluginExtension> {

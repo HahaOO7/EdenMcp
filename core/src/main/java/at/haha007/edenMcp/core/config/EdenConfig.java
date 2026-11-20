@@ -4,6 +4,7 @@ import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.mode.OperatingMode;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -57,7 +58,7 @@ public record EdenConfig(
         }
     }
 
-    public static EdenConfig from(FileConfiguration cfg, Logger logger) {
+    public static EdenConfig from(FileConfiguration cfg, @Nullable Logger logger) {
         boolean enabled = cfg.getBoolean("mcp.enabled", true);
         OperatingMode mode = OperatingMode.parse(cfg.getString("mcp.mode", "safe"), OperatingMode.SAFE);
 
@@ -169,7 +170,7 @@ public record EdenConfig(
                 auditMaxValueLength, hooks, new CommandClassification(rules));
     }
 
-    private static CapabilityLevel parseCommandLevel(String s) {
+    private static @Nullable CapabilityLevel parseCommandLevel(@Nullable String s) {
         if (s == null) return null;
         return switch (s.toLowerCase(Locale.ROOT).trim()) {
             case "safe", "safe_read", "safe-read" -> CapabilityLevel.SAFE_READ;

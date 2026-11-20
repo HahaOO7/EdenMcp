@@ -10,6 +10,7 @@ import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Map;
@@ -25,7 +26,7 @@ public final class CommandDispatchTool implements McpTool {
     private final boolean logVerbose;
     private final int dispatchTimeoutSeconds;
 
-    public CommandDispatchTool(Plugin plugin, CommandClassification classification, Logger logger,
+    public CommandDispatchTool(Plugin plugin, @Nullable CommandClassification classification, Logger logger,
                                boolean logVerbose, EdenConfig.ToolConfig tools) {
         this.plugin = plugin;
         this.classification = new AtomicReference<>(classification == null ? CommandClassification.empty() : classification);
@@ -34,7 +35,7 @@ public final class CommandDispatchTool implements McpTool {
         this.dispatchTimeoutSeconds = tools.commandDispatchTimeoutSeconds();
     }
 
-    public void updateClassification(CommandClassification classification) {
+    public void updateClassification(@Nullable CommandClassification classification) {
         this.classification.set(classification == null ? CommandClassification.empty() : classification);
     }
 
@@ -86,7 +87,8 @@ public final class CommandDispatchTool implements McpTool {
         }
     }
 
-    private void log(String action, String caller, OperatingMode mode, CapabilityLevel classification, String command) {
+    private void log(String action, String caller, OperatingMode mode, CapabilityLevel classification,
+                     @Nullable String command) {
         StringBuilder msg = new StringBuilder("[COMMAND] action=").append(action)
                 .append(" caller=").append(caller)
                 .append(" mode=").append(mode)

@@ -5,6 +5,7 @@ import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Map;
@@ -44,7 +45,7 @@ abstract class SparkStatsTool implements McpTool {
 
     protected abstract List<String> windows();
 
-    protected abstract Map<String, Object> poll(String window) throws Exception;
+    protected abstract Map<String, Object> poll(@Nullable String window) throws Exception;
 
     @Override
     public final ToolResult execute(ToolContext context) {
@@ -57,7 +58,7 @@ abstract class SparkStatsTool implements McpTool {
         }
     }
 
-    protected final String window(Map<String, Object> args) {
+    protected final @Nullable String window(Map<String, Object> args) {
         return SparkApi.Windows.resolve(args, aliases(), allowed());
     }
 

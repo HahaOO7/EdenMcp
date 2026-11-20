@@ -4,6 +4,7 @@ import at.haha007.edenMcp.core.tool.ToolContext;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.Plugin;
+import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
@@ -112,7 +113,7 @@ final class SparkCommandRunner {
     }
 
     @SuppressWarnings("JavaReflectionInvocation")
-    private static String render(Object message) {
+    private static String render(@Nullable Object message) {
         if (message == null) return "";
         if (message instanceof CharSequence) return message.toString();
         try {

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -70,7 +71,7 @@ class SparkDiagnosticsToolTest {
     void executeReturnsErrorsBeforeDispatchingACommand() {
         ToolResult missingCommand = tool.execute(context(Map.of()));
         assertFalse(missingCommand.success());
-        assertTrue(missingCommand.error().contains("command"));
+        assertTrue(Objects.requireNonNull(missingCommand.error()).contains("command"));
 
         ToolResult badCommand = tool.execute(context(args("command", "upload")));
         assertFalse(badCommand.success());

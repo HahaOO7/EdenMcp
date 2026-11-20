@@ -2,6 +2,7 @@ package at.haha007.edenMcp.core.policy;
 
 import at.haha007.edenMcp.core.mode.OperatingMode;
 import at.haha007.edenMcp.core.tool.McpTool;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Single place for authorization decisions that are not purely mode-based.
@@ -16,12 +17,12 @@ public final class SecurityPolicy {
     }
 
     /** Mode ceiling for tool execution. */
-    public boolean canExecute(OperatingMode mode, McpTool tool) {
+    public boolean canExecute(@Nullable OperatingMode mode, @Nullable McpTool tool) {
         return mode != null && tool != null && mode.allows(tool.level());
     }
 
     /** Whether a transition into the target mode is permitted by server policy. */
-    public boolean canEnter(OperatingMode target) {
+    public boolean canEnter(@Nullable OperatingMode target) {
         return target != null && (target != OperatingMode.UNSAFE || allowUnsafeAtRuntime);
     }
 

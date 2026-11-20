@@ -2,6 +2,7 @@ package at.haha007.edenMcp.core.tool;
 
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
 import at.haha007.edenMcp.core.capability.SideEffects;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ public interface McpTool {
     /**
      * JSON-schema-like map describing arguments for MCP advertisement.
      */
-    Map<String, Object> inputSchema();
+    @Nullable Map<String, Object> inputSchema();
 
     ToolResult execute(ToolContext context) throws Exception;
 

@@ -2,6 +2,7 @@ package at.haha007.edenMcp.hooks.spark;
 
 import org.bukkit.Server;
 import org.bukkit.plugin.Plugin;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -123,7 +124,7 @@ final class SparkDataStore {
     record Chunk(byte[] bytes, String sha256, int returned) {
     }
 
-    private static String typeOf(String name) {
+    private static @Nullable String typeOf(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         if (lower.endsWith(PROFILE_EXT)) return "profile";
         if (lower.endsWith(HEAP_EXT)) return "heapdump";

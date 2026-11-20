@@ -5,6 +5,7 @@ import at.haha007.edenMcp.core.capability.SideEffects;
 import at.haha007.edenMcp.core.tool.McpTool;
 import at.haha007.edenMcp.core.tool.ToolContext;
 import at.haha007.edenMcp.core.tool.ToolResult;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,9 +18,9 @@ final class SparkDiagnosticsTool implements McpTool {
     private static final Set<String> COMPRESSIONS = Set.of("gzip", "xz", "lzma");
 
     private final SparkCommandRunner runner;
-    private final SparkDataStore store;
+    @Nullable private final SparkDataStore store;
 
-    SparkDiagnosticsTool(SparkCommandRunner runner, SparkDataStore store) {
+    SparkDiagnosticsTool(SparkCommandRunner runner, @Nullable SparkDataStore store) {
         this.runner = runner;
         this.store = store;
     }
@@ -114,6 +115,7 @@ final class SparkDiagnosticsTool implements McpTool {
     }
 
     private List<Map<String, Object>> recentHeapDumps() {
+        if (store == null) return List.of();
         try {
             return store.list("heapdump", 3);
         } catch (Exception e) {

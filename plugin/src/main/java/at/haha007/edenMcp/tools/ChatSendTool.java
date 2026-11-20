@@ -10,6 +10,7 @@ import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Map;
@@ -105,7 +106,7 @@ public final class ChatSendTool implements McpTool {
         logger.info(msg.toString());
     }
 
-    private <T> T runSync(Callable<T> task) throws Exception {
+    private <T> @Nullable T runSync(Callable<T> task) throws Exception {
         if (Bukkit.isPrimaryThread()) return task.call();
         Future<T> future = Bukkit.getScheduler().callSyncMethod(plugin, task);
         return future.get(syncTimeoutSeconds, TimeUnit.SECONDS);

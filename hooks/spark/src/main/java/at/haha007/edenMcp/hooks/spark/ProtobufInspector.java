@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.hooks.spark;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.CharacterCodingException;
@@ -53,7 +55,7 @@ final class ProtobufInspector {
         return new ParseAll(fields, position, position == data.length);
     }
 
-    private static Parsed parseField(byte[] data, int position, int depth, Budget budget) {
+    private static @Nullable Parsed parseField(byte[] data, int position, int depth, Budget budget) {
         Varint tag = readVarint(data, position);
         if (tag == null || tag.value() == 0) return null;
         int fieldNumber = (int) (tag.value() >>> 3);
@@ -124,7 +126,7 @@ final class ProtobufInspector {
         return abbreviatedBase64(slice);
     }
 
-    private static String printableUtf8(byte[] bytes) {
+    private static @Nullable String printableUtf8(byte[] bytes) {
         if (bytes.length == 0) return "";
         try {
             String text = StandardCharsets.UTF_8.newDecoder()
@@ -151,7 +153,7 @@ final class ProtobufInspector {
         return encoded.length() <= 4096 ? encoded : encoded.substring(0, 4096) + "... (truncated)";
     }
 
-    private static Varint readVarint(byte[] data, int position) {
+    private static @Nullable Varint readVarint(byte[] data, int position) {
         long value = 0;
         int shift = 0;
         int cursor = position;

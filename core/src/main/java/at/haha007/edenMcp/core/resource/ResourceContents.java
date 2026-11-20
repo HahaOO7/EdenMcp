@@ -1,6 +1,7 @@
 package at.haha007.edenMcp.core.resource;
 
 import com.google.gson.Gson;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -13,14 +14,17 @@ import java.util.Map;
  * transport's JSON library. {@code blob} is a base64-encoded string for binary
  * resources; at most one of the two is emitted.
  */
-public record ResourceContents(String uri, String mimeType, Object text, String blob) {
+public record ResourceContents(@Nullable String uri, @Nullable String mimeType,
+                               @Nullable Object text, @Nullable String blob) {
     private static final Gson GSON = new Gson();
 
-    public static ResourceContents text(String uri, String mimeType, Object content) {
+    public static ResourceContents text(@Nullable String uri, @Nullable String mimeType,
+                                        @Nullable Object content) {
         return new ResourceContents(uri, mimeType, content, null);
     }
 
-    public static ResourceContents blob(String uri, String mimeType, String base64) {
+    public static ResourceContents blob(@Nullable String uri, @Nullable String mimeType,
+                                        @Nullable String base64) {
         return new ResourceContents(uri, mimeType, null, base64);
     }
 

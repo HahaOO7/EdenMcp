@@ -17,6 +17,7 @@ import at.haha007.edenMcp.core.tool.ToolResult;
 import at.haha007.edenMcp.core.util.PrivateFileUtil;
 import com.google.gson.*;
 import com.sun.net.httpserver.*;
+import org.jetbrains.annotations.Nullable;
 
 import javax.net.ssl.*;
 import java.io.*;
@@ -59,7 +60,7 @@ public final class McpHttpServer {
     private volatile long lastSessionPrune;
     private final boolean wildcardBind;
     private final boolean explicitHosts;
-    private HttpServer server;
+    @Nullable private HttpServer server;
     private volatile int port;
     private final Set<SseClient> sseClients = ConcurrentHashMap.newKeySet();
     private final ThreadPoolExecutor executor;
@@ -68,7 +69,7 @@ public final class McpHttpServer {
     public McpHttpServer(EdenConfig config,
                          AccessKeyManager keyManager,
                          ToolRegistry registry,
-                         HookManager hookManager,
+                         @Nullable HookManager hookManager,
                          AuditLogger audit,
                          Logger logger,
                          AtomicReference<OperatingMode> mode,
@@ -112,6 +113,7 @@ public final class McpHttpServer {
     public void start(Path dataFolder) throws Exception {
         InetSocketAddress addr = new InetSocketAddress(config.transport().bind(), config.transport().port());
         EdenConfig.TlsConfig tls = config.transport().tls();
+        HttpServer active;
         if (tls.enabled()) {
             HttpsServer https = HttpsServer.create(addr, 0);
             SSLContext ssl = createSslContext(tls, dataFolder);
@@ -122,18 +124,19 @@ public final class McpHttpServer {
                     params.setSSLParameters(hardened);
                 }
             });
-            this.server = https;
+            active = https;
             logger.info("MCP HTTP server starting with TLS enabled on " + addr);
         } else {
-            this.server = HttpServer.create(addr, 0);
+            active = HttpServer.create(addr, 0);
             logger.warning("[SECURITY] MCP TLS is DISABLED. Access key and tool I/O may be exposed in plaintext. Bind=" + addr);
         }
-        server.createContext("/mcp", this::handleMcp);
-        server.createContext("/sse", this::handleSse);
-        server.createContext("/message", this::handleMcp);
-        server.setExecutor(executor);
-        server.start();
-        this.port = server.getAddress().getPort();
+        this.server = active;
+        active.createContext("/mcp", this::handleMcp);
+        active.createContext("/sse", this::handleSse);
+        active.createContext("/message", this::handleMcp);
+        active.setExecutor(executor);
+        active.start();
+        this.port = active.getAddress().getPort();
         logger.info("MCP server listening on " + (tls.enabled() ? "https" : "http") + "://"
                 + config.transport().bind() + ":" + port);
         if (wildcardBind && !explicitHosts) {
@@ -152,7 +155,7 @@ public final class McpHttpServer {
     }
 
     /** Close every session and SSE stream bound to a key id (used after rotation/revocation). */
-    public int invalidateSessionsForPrincipal(String principalId) {
+    public int invalidateSessionsForPrincipal(@Nullable String principalId) {
         int n = 0;
         Iterator<McpSession> it = sessions.values().iterator();
         while (it.hasNext()) {
@@ -365,7 +368,8 @@ public final class McpHttpServer {
         try {
             ToolResult result = tool.execute(new ToolContext(active, caller, args));
             audit.toolCall(caller, name, active.name(), result.success(), result.success() ? "ok" : "tool_error");
-            Object payload = result.success() ? result.content() : Map.of("error", result.error());
+            Object payload = result.success() ? result.content()
+                    : Map.of("error", Objects.requireNonNull(result.error(), "Tool error message"));
             return toolCallResponse(result.success(), payload == null ? Map.of() : payload);
         } catch (Exception e) {
             logger.log(Level.WARNING, "Tool execution failed: " + name, e);
@@ -885,7 +889,7 @@ public final class McpHttpServer {
         return params;
     }
 
-    public void broadcastModeChange(OperatingMode newMode) {
+    public void broadcastModeChange(@Nullable OperatingMode newMode) {
         String name = newMode == null ? "unknown" : newMode.name().toLowerCase(Locale.ROOT);
         for (SseClient c : sseClients) {
             c.sendEvent("mode", Map.of("mode", name));

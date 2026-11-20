@@ -1,5 +1,8 @@
 package at.haha007.edenMcp.core.resource;
 
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -13,12 +16,12 @@ import java.util.function.Supplier;
  * every operating mode, just like the read-only tools in safe mode.
  */
 public record McpResource(
-        String uri,
-        String name,
-        String description,
-        String mimeType,
+        @NotNull String uri,
+        @NotNull String name,
+        @Nullable String description,
+        @Nullable String mimeType,
         Map<String, Object> metadata,
-        ResourceReader reader
+        @NotNull ResourceReader reader
 ) {
     public McpResource {
         Objects.requireNonNull(uri, "uri");
@@ -28,14 +31,14 @@ public record McpResource(
     }
 
     /** Convenience for a resource whose content is produced by a supplier. */
-    public static McpResource text(String uri, String name, String description, String mimeType,
-                                   Supplier<Object> content) {
+    public static McpResource text(@NotNull String uri, @NotNull String name, @Nullable String description,
+                                   @Nullable String mimeType, @NotNull Supplier<Object> content) {
         Objects.requireNonNull(content, "content");
         return new McpResource(uri, name, description, mimeType, Map.of(),
                 ctx -> ResourceContents.text(ctx.uri(), mimeType, content.get()));
     }
 
-    public ResourceContents read(ResourceContext context) throws Exception {
+    public ResourceContents read(@NotNull ResourceContext context) throws Exception {
         return reader.read(context);
     }
 }

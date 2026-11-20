@@ -1,5 +1,7 @@
 package at.haha007.edenMcp.hooks.spark;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +46,7 @@ final class CpuStatsTool extends SparkStatsTool {
     }
 
     @Override
-    protected Map<String, Object> poll(String window) throws Exception {
+    protected Map<String, Object> poll(@Nullable String window) throws Exception {
         return sparkApi.cpu(window);
     }
 }

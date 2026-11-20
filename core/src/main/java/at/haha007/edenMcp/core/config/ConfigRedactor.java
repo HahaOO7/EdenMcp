@@ -1,5 +1,8 @@
 package at.haha007.edenMcp.core.config;
 
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.Nullable;
+
 import java.util.*;
 
 public final class ConfigRedactor {
@@ -14,7 +17,8 @@ public final class ConfigRedactor {
 
     private ConfigRedactor() {}
 
-    public static Object redact(Object value, String path) {
+    @Contract("!null, _ -> !null")
+    public static @Nullable Object redact(@Nullable Object value, @Nullable String path) {
         String lowerPath = path == null ? "" : path.toLowerCase(Locale.ROOT);
         if (isDeniedPath(lowerPath)) {
             return redactDeniedValue(value);

@@ -2,6 +2,7 @@ package at.haha007.edenMcp.hooks.spark;
 
 import org.bukkit.Server;
 import org.bukkit.plugin.RegisteredServiceProvider;
+import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -77,7 +78,7 @@ final class SparkApi {
         return instance;
     }
 
-    Map<String, Object> cpu(String window) throws Exception {
+    Map<String, Object> cpu(@Nullable String window) throws Exception {
         return pollDouble("cpuProcess", window);
     }
 
@@ -85,11 +86,11 @@ final class SparkApi {
         return pollDouble("cpuSystem", null);
     }
 
-    Map<String, Object> tps(String window) throws Exception {
+    Map<String, Object> tps(@Nullable String window) throws Exception {
         return pollDouble("tps", window);
     }
 
-    Map<String, Object> mspt(String window) throws Exception {
+    Map<String, Object> mspt(@Nullable String window) throws Exception {
         Object statistic = call(spark(), "mspt");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("statistic", call(statistic, "name"));
@@ -150,7 +151,7 @@ final class SparkApi {
         }
     }
 
-    private Map<String, Object> pollDouble(String method, String window) throws Exception {
+    private Map<String, Object> pollDouble(String method, @Nullable String window) throws Exception {
         Object statistic = call(spark(), method);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("statistic", call(statistic, "name"));
@@ -201,7 +202,7 @@ final class SparkApi {
         }
     }
 
-    private static Method findMethod(Class<?> type, String name, Object[] args) {
+    private static @Nullable Method findMethod(Class<?> type, String name, Object[] args) {
         for (Method method : type.getMethods()) {
             if (!method.getName().equals(name) || method.getParameterCount() != args.length) continue;
             boolean matches = true;
@@ -249,7 +250,8 @@ final class SparkApi {
         private Windows() {
         }
 
-        static String resolve(Map<String, Object> args, Map<String, String> aliases, Set<String> allowed) {
+        static @Nullable String resolve(Map<String, Object> args, Map<String, String> aliases,
+                                        Set<String> allowed) {
             String key = "window";
             Object value = args.get(key);
             if (value == null) return null;

@@ -15,18 +15,20 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.regex.Pattern;
 
+import org.jetbrains.annotations.Nullable;
+
 public final class LogsReadTool implements McpTool {
     // The first character class excludes the quantifier characters, so the group
     // cannot be matched at multiple positions - avoids super-linear backtracking.
     private static final Pattern NESTED_QUANTIFIER = Pattern.compile("(\\([^)+*]*[+*][^)]*\\))[+*{]");
-    private final Path logFile;
+    @Nullable private final Path logFile;
     private final boolean requireModerate;
     private final int defaultLimit;
     private final int maxLimit;
     private final int maxScanBytes;
     private final int maxPatternLength;
 
-    public LogsReadTool(Path logFile, boolean requireModerate, EdenConfig.ToolConfig tools) {
+    public LogsReadTool(@Nullable Path logFile, boolean requireModerate, EdenConfig.ToolConfig tools) {
         this.logFile = logFile;
         this.requireModerate = requireModerate;
         this.defaultLimit = tools.logsDefaultLimit();
@@ -81,7 +83,8 @@ public final class LogsReadTool implements McpTool {
         }
     }
 
-    private List<String> readTailLines(Path file, int limit, String filter, Pattern pattern) throws IOException {
+    private List<String> readTailLines(Path file, int limit, @Nullable String filter,
+                                       @Nullable Pattern pattern) throws IOException {
         long length = Files.size(file);
         if (length <= 0) return List.of();
         int toRead = (int) Math.min(length, maxScanBytes);

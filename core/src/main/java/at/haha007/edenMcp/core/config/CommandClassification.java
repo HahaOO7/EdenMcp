@@ -1,6 +1,7 @@
 package at.haha007.edenMcp.core.config;
 
 import at.haha007.edenMcp.core.capability.CapabilityLevel;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -14,7 +15,7 @@ public record CommandClassification(List<Rule> rules) {
     public record Rule(CapabilityLevel level, Pattern pattern, String rawPattern) {
         // The group is required to anchor alternation in user-supplied patterns.
         @SuppressWarnings("RegExpUnnecessaryNonCapturingGroup")
-        public static Rule of(CapabilityLevel level, String rawPattern) {
+        public static Rule of(CapabilityLevel level, @Nullable String rawPattern) {
             String raw = rawPattern == null ? "" : rawPattern;
             String effective = (raw.startsWith("^") && raw.endsWith("$")) ? raw : "^(?:" + raw + ")$";
             return new Rule(level, Pattern.compile(effective), raw);
@@ -30,7 +31,7 @@ public record CommandClassification(List<Rule> rules) {
      * contain control characters or command-separator sequences, which must never be classified
      * as safe because a prefix could otherwise hide a chained dangerous command.
      */
-    public static String normalize(String command) {
+    public static @Nullable String normalize(@Nullable String command) {
         if (command == null) return null;
         String cmd = command.strip();
         if (cmd.startsWith("/")) cmd = cmd.substring(1).stripLeading();
@@ -47,7 +48,7 @@ public record CommandClassification(List<Rule> rules) {
         return cmd.replaceAll("\\s+", " ");
     }
 
-    public CapabilityLevel classify(String command) {
+    public CapabilityLevel classify(@Nullable String command) {
         String cmd = normalize(command);
         if (cmd == null) return CapabilityLevel.UNSAFE_ACTION;
         for (Rule rule : rules) {
