@@ -116,6 +116,20 @@ class AuditLoggerTest {
     }
 
     @Test
+    void fileWriteLogsPathAndCallerWithoutContent() {
+        audit.fileWrite("key=primary@host", "plugins/EdenMcp/config.yml\ncontent=secret", "UNSAFE");
+
+        assertEquals(1, records.size());
+        assertEquals(Level.WARNING, records.getFirst().getLevel());
+        String msg = message(0);
+        assertTrue(msg.startsWith("[AUDIT] file-write"), msg);
+        assertTrue(msg.contains("caller=key=primary@host"), msg);
+        assertTrue(msg.contains("path=plugins/EdenMcp/config.yml content=secret"), msg);
+        assertTrue(msg.contains("mode=UNSAFE"), msg);
+        assertFalse(msg.contains("\r") || msg.contains("\n"), msg);
+    }
+
+    @Test
     void toolAndModeLoggingCanBeDisabledIndependently() {
         audit.setLogToolCalls(false);
         audit.setLogModeChanges(false);
@@ -131,12 +145,12 @@ class AuditLoggerTest {
 
     @Test
     void resourceReadRecordsUriModeAndOutcome() {
-        audit.resourceRead("key=primary@host", "edenmcp://config/snapshot", "SAFE", true, "ok");
+        audit.resourceRead("key=primary@host", "edenmcp://spark/stats", "SAFE", true, "ok");
 
         assertEquals(1, records.size());
         String msg = message(0);
         assertTrue(msg.startsWith("[AUDIT] resource "), msg);
-        assertTrue(msg.contains("uri=edenmcp://config/snapshot"), msg);
+        assertTrue(msg.contains("uri=edenmcp://spark/stats"), msg);
         assertTrue(msg.contains("mode=SAFE"), msg);
         assertTrue(msg.contains("success=true"), msg);
         assertTrue(msg.contains("outcome=ok"), msg);

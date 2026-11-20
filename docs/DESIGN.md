@@ -15,7 +15,7 @@ This separation keeps protocol and policy logic testable in `core` while letting
 
 ## Goals
 
-- Provide a useful MCP interface for server administration and debugging, including remote access.
+- Provide a useful MCP interface for server administration and debugging, including remote access and admin-level text file inspection/editing under the server directory.
 - Enforce a clear safety boundary through explicit operating modes that can be changed at runtime.
 - Require authenticated access (access key) for all MCP tool/resource interactions.
 - Allow optional plugin integrations (hooks) to extend the MCP surface without hard dependencies.
@@ -33,9 +33,9 @@ EdenMcp runs in exactly one mode at a time. The mode is configured on the server
 
 | Mode | Intent | Allowed capability classes |
 | --- | --- | --- |
-| `safe` | Inspection and diagnostics. Default. | Read-only observation: logs, config/state snapshots, metrics, player/world metadata reads, listing resources. No mutations, no commands, no messages. |
+| `safe` | Inspection and diagnostics. Default. | Read-only observation: logs, directory listings and any UTF-8 text file under the server directory, metrics, player/world metadata reads, listing resources. No mutations, no commands, no messages. |
 | `moderate` | Routine operator assistance. | Everything in `safe`, plus low-risk actions: sending messages/broadcasts and other explicitly classified "safe-mutation" operations, including hook actions marked moderate. No console commands, no world/data mutation, no permission or economy changes, no hook actions marked dangerous. |
-| `unsafe` | Full administrative control. | Everything in `moderate`, plus console/command dispatch, privileged hook actions, and any tool classified as dangerous. |
+| `unsafe` | Full administrative control. | Everything in `moderate`, plus console/command dispatch, creating/overwriting text files under the server directory, privileged hook actions, and any tool classified as dangerous. |
 
 **Runtime mode changes**
 - Exposed as an authorized control operation (`edenmcp.mode.set` / `edenmcp.mode.get`) at `MODERATE_ACTION`, so it is callable only with a valid access key in `moderate` or `unsafe` mode, never in `safe`.
@@ -93,7 +93,9 @@ Suggested mapping:
 
 ### Safe (read-only) tools/resources
 - `edenmcp.logs.read` – read recent server log lines with optional filter/limit (bounded).
-- `edenmcp.config.get` – read server/EdenMcp configuration and state (full exposure of available config as requested); **secrets (access key/tokens/credentials) must always be redacted**.
+- `edenmcp.file.list` (`SAFE_READ`) – list entries under a directory in the server root (empty/`"."` path lists the root itself). Entries carry name, server-relative path, type and size; results are sorted and entry-count bounded, with `truncated` reporting when the cap hid more entries. Optional `recursive` descends up to a capped `depth` (symlinks are never followed), and an optional glob `pattern` filters server-relative paths.
+- `edenmcp.file.read` (`SAFE_READ`) – read any UTF-8 text file under the server directory, supplied as a relative path. Paths are confined to the server root: absolute paths, `..` traversal, and symlinks resolving outside the root are rejected. Reads are size-bounded, decode UTF-8 strictly (malformed sequences are rejected), reject NUL/binary content, and require a regular file. Optional zero-based `offset` and `limit` return a line-aligned slice with `lineStart`, `lineCount` and `hasMore`. Configuration is read from the config files with this tool; no separate config-snapshot tool/resource is exposed.
+- `edenmcp.file.write` (`UNSAFE_ACTION`) – create or overwrite a UTF-8 text file under the same root; parent directories must already exist. The write goes to a temp file in the same directory and is moved into place atomically (falling back to a plain move where atomic moves are unsupported), preserving the original POSIX permissions. Only advertised/executable in `unsafe` mode and also checked inside the tool.
 - `edenmcp.server.status` – version, TPS/MSPT, player counts, uptime, loaded worlds.
 - `edenmcp.players.list` – online players and available metadata.
 - `edenmcp.plugins.list` – installed plugins and enabled state.
@@ -122,7 +124,7 @@ Suggested mapping:
 
 Resources are read-only observations exposed through the MCP resource methods. `resources/list` returns every registered resource (URI, name, optional description/mimeType, and optional `_meta`); `resources/read` takes a `uri` and returns one `contents` entry with `uri`, `mimeType`, and `text` (JSON values are serialized by the transport). Resources have no capability level above `SAFE_READ` and stay visible in every mode. A resource read is authenticated and session-bound just like a tool call; unknown URIs and reader failures produce JSON-RPC errors and are audited.
 
-Shipped resources: `edenmcp://config/snapshot` (the same redacted configuration/state snapshot as `edenmcp.config.get`), `edenmcp://luckperms/groups` when LuckPerms is present, and `edenmcp://spark/stats` when Spark is present (aggregated CPU/TPS/MSPT/GC snapshot).
+Shipped resources: `edenmcp://luckperms/groups` when LuckPerms is present, and `edenmcp://spark/stats` when Spark is present (aggregated CPU/TPS/MSPT/GC snapshot).
 
 ## Hook / Plugin Integration SPI
 
@@ -230,6 +232,11 @@ mcp:
       # max-limit: 500
       # max-scan-bytes: 1048576
       # max-pattern-length: 200
+    files:
+      # max-read-bytes: 4194304   # edenmcp.file.read response cap
+      # max-write-bytes: 1048576  # edenmcp.file.write content cap
+      # max-list-entries: 500     # edenmcp.file.list result cap
+      # max-list-depth: 10        # edenmcp.file.list recursion cap
 
 hooks:
   # Server-provided hook enablement (not client-configurable)
@@ -267,7 +274,7 @@ audit:
 - Default mode is `safe`. A cryptographically random, owner-only access key is generated into a static `.key` file on first startup; protect this file and distribute the key out-of-band to authorized clients. All new keys above are **optional** with secure defaults — a fresh install needs none of them.
 - Hooks listed here reflect server-owned integrations assembled by `plugin`; clients cannot add or reconfigure hooks.
 - Command classification rules are server-side only (ordered regex list, first match wins); unmatched commands remain `UNSAFE_ACTION` by default. Patterns are always anchored to the whole command.
-- `edenmcp.config.get` is broadly exposed but applies layered redaction to sensitive keys/paths so secrets are never returned.
+- There are no secret config values to hide: `edenmcp.file.list` / `edenmcp.file.read` expose the server's config files directly, so no separate config-snapshot tool or resource is provided. The access key is stored in a separate owner-only `.key` file and is protected by the transport authentication gate. Note that `edenmcp.file.read` can read `.key` too, so an authenticated client is effectively an administrator.
 
 ## Auditing & Safety
 
@@ -279,7 +286,7 @@ audit:
 
 ## Implementation Status
 
-Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, and the LuckPerms and Spark hooks. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, secret redaction, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
+Implemented and covered by unit and Paper integration tests: the core mode/capability model and filtered tool registry, the resource SPI with `resources/list`/`resources/read` and hook-contributed resources, HTTP+SSE transport with built-in TLS and authenticated sessions, runtime mode control, the safe/moderate/unsafe toolsets, root-confined text file list/read/write, and the LuckPerms and Spark hooks. Transport/auth hardening includes principal-bound sessions, key rotation and multi-key support, a centralized `SecurityPolicy`, optional mTLS and escalation lock, and build supply-chain checks (pinned Paper API, LuckPerms SHA-256 verification, Gradle dependency verification). See [docs/DEPLOYMENT.md](DEPLOYMENT.md) for the operator-facing details.
 
 ## Resolved Decisions
 
@@ -289,7 +296,8 @@ Implemented and covered by unit and Paper integration tests: the core mode/capab
 - **Access key:** a static, owner-only `.key` file is generated on first plugin startup (256-bit random); invalid files are quarantined and regenerated. Optional rotation (`mcp key rotate`, with an in-memory grace window) and multi-key files are available for operators who need them; a fresh install requires neither.
 - **Credential header:** `Authorization: Bearer <key>` is canonical; query-string and raw `Authorization` keys are rejected. `X-Eden-Key` is a deprecated opt-in alias.
 - **TLS:** built-in self-signed TLS by default with owner-only keystore + random password; fingerprint logged for pinning; TLS 1.2/1.3 AEAD-only; custom keystore and mTLS optional.
-- **`edenmcp.config.get` redaction:** layered policy — never inline secret stores (report presence/status only), default-deny heuristic masking for sensitive key/path names (e.g. `key`, `token`, `secret`, `password`, `credential`, `auth`, `private`) plus an explicit denylist for known sensitive paths, with narrowly scoped allow-through exceptions for known non-secret collisions; applied to core and hook-exposed config/state.
+- **No secret configs:** EdenMcp is an admin tool, so config values are read from the config files with `edenmcp.file.read`; no config-snapshot tool/resource is needed. Secret material is not part of the YAML config (the access key is a separate `.key` file), and access is gated by the access key + TLS.
+- **Server-directory file access:** `edenmcp.file.list` and `edenmcp.file.read` (`SAFE_READ`) and `edenmcp.file.write` (`UNSAFE_ACTION`) operate on relative paths under the server working directory. Lexical `..`/absolute-path checks plus real-path checks on every existing component prevent traversal and symlink escapes; reads require regular files, decode UTF-8 strictly, reject NUL/binary content, and are size-bounded; listings are entry/depth bounded and report truncation; writes are atomic and guarded inside the tool, not just by mode-filtered discovery. Java cannot fully close the TOCTOU window where a local actor swaps a parent directory for a symlink between resolution and the OS call.
 
 ## Open Questions
 

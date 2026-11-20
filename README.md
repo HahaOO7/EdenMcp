@@ -10,9 +10,10 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 - **Access-key authentication** — random 256-bit key stored owner-only in the plugin data folder (`Authorization: Bearer <key>`), constant-time comparison, per-IP failure throttling, rotation, and optional multi-key support
 - **Three operating modes** (`safe`, `moderate`, `unsafe`) that gate which tools are advertised and executable; mode can be changed at runtime and is audited
 - **Session handling** — `initialize` issues an `Mcp-Session-Id`; sessions are principal-bound, idle-expiring, and invalidated on key rotation
-- **Auditing with redaction** — tool calls and mode changes are logged, while commands/chat messages and secrets are redacted by default
+- **Auditing with redaction** — tool calls and mode changes are logged, while command/chat content and tool errors are omitted from audit logs by default
 - **Server-authoritative hooks** — integrations contribute tools through a small SPI; currently LuckPerms (read-only lookups) and Spark (profiling, diagnostics, raw data)
-- **Hardened defaults** — bounded request bodies/batches/SSE clients, Host/Origin validation, no CORS headers unless configured, and secret redaction in `edenmcp.config.get`
+- **Full admin file access** — `edenmcp.file.list` (including recursive/glob listings) and `edenmcp.file.read` (with line-based paging) discover and read any UTF-8 text file under the server directory; `edenmcp.file.write` atomically creates/overwrites files in `unsafe` mode
+- **Root-confined file access** — paths are relative to the server directory; `..` traversal and symlinks escaping it are rejected. Config values are read from the config files themselves; there is no separate config-snapshot tool.
 
 ## Requirements
 
@@ -68,6 +69,7 @@ Configuration lives in `plugins/EdenMcp/config.yml`; the shipped defaults are in
 | `mcp.tools.chat-min-interval-ms` | Global chat-send throttle (default `250`; `0` disables it) |
 | `mcp.tools.chat-sync-timeout-seconds` / `command-dispatch-timeout-seconds` | Main-thread wait limits for chat and console commands |
 | `mcp.tools.logs` | Log-read default/max lines, tail scan bytes, max regex filter length |
+| `mcp.tools.files` | Max entries / recursion depth for `edenmcp.file.list`, max bytes for `edenmcp.file.read` / `edenmcp.file.write` |
 | `audit.max-value-length` | Truncation length for sanitized audit values (default `200`) |
 | `hooks.luckperms.enabled` | Enable the LuckPerms hook |
 | `hooks.spark.enabled` | Enable the Spark profiling hook (Paper ships Spark) |
@@ -91,9 +93,9 @@ All `mcp` subcommands require the `edenmcp.admin` permission (granted to operato
 
 | Mode | Capabilities |
 | --- | --- |
-| `safe` (default) | Read-only inspection: status, logs, config snapshot, players, plugins, hooks, mode, Spark statistics/profiler status/raw data |
+| `safe` (default) | Read-only inspection: status, logs, directory listings and any text file under the server directory, players, plugins, hooks, mode, Spark statistics/profiler status/raw data |
 | `moderate` | Everything in `safe`, plus chat, `edenmcp.mode.set`, Spark profiler control and diagnostic commands |
-| `unsafe` | Everything above, plus console command dispatch and privileged hook actions |
+| `unsafe` | Everything above, plus console command dispatch, writing text files under the server directory, and privileged hook actions |
 
 Tools are filtered by mode before they are advertised, so clients never see tools they cannot execute. Mode changes take effect immediately for subsequent discovery and calls. By default an authenticated client can escalate to `unsafe` via `edenmcp.mode.set`; set `mcp.policy.allow-unsafe-at-runtime: false` to restrict that to the server console.
 
@@ -106,7 +108,8 @@ Read-only (`safe`):
 - `edenmcp.plugins.list` — installed plugins and enabled state
 - `edenmcp.hooks.list` — available/enabled hooks
 - `edenmcp.logs.read` — bounded recent log lines with optional filter
-- `edenmcp.config.get` — config/state snapshot with secrets redacted
+- `edenmcp.file.list` — list a directory under the server root (default: root); optional `recursive`, `depth`, and glob `pattern`, with `truncated` reporting
+- `edenmcp.file.read` — read a UTF-8 text file (relative path, bounded size); optional `offset`/`limit` return a line-aligned slice with `hasMore`
 - `edenmcp.mode.get` — current mode
 - `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.user.permission.check`, `edenmcp.luckperms.user.groups`, `edenmcp.luckperms.groups.list`, `edenmcp.luckperms.group.get`, `edenmcp.luckperms.tracks.list`, `edenmcp.luckperms.track.get`, `edenmcp.luckperms.audit.read` — when LuckPerms is installed
 - `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc` — Spark's performance statistics with optional windows
@@ -125,6 +128,7 @@ Moderate:
 Unsafe:
 
 - `edenmcp.command.dispatch` — execute a console command (strongly audited; cannot be reclassified below `unsafe`)
+- `edenmcp.file.write` — atomically create or overwrite a UTF-8 text file under the server directory (audited; preserves existing POSIX permissions)
 - `edenmcp.luckperms.user.permission.set`, `edenmcp.luckperms.group.permission.set`, `edenmcp.luckperms.group.create`, `edenmcp.luckperms.user.group.add`, `edenmcp.luckperms.user.group.remove`, `edenmcp.luckperms.group.meta.set`, `edenmcp.luckperms.user.track.promote`, `edenmcp.luckperms.user.track.demote` — LuckPerms mutations (only in `unsafe` mode; audited in LuckPerms' action log)
 
 ## Project structure
@@ -168,9 +172,9 @@ lifecycle and examples.
 
 ## Security notes
 
-- Treat the `.key` file like an operator password: keep it owner-only and distribute it out-of-band. It is never returned by config/status tools or printed by the rotation command.
+- Treat the `.key` file like an operator password: keep it owner-only and distribute it out-of-band. Any authenticated client can list and read text files under the server directory (including `.key`) with `edenmcp.file.list` / `edenmcp.file.read`, so the access key is the full admin boundary. It is never printed by the rotation command.
 - Keep TLS enabled for any non-local deployment; verify the logged certificate fingerprint on first connect.
-- Start in `safe` mode and escalate only as needed. Running in `unsafe` mode or binding to a non-loopback address produces a warning.
+- Start in `safe` mode and escalate only as needed. Running in `unsafe` mode or binding to a non-loopback address produces a warning. `edenmcp.file.write` can overwrite any text file under the server directory, including plugin configs.
 - Audit logging is on by default. `audit.log-verbose` logs full command/message content and is off by default.
 - Invalid, symlinked, or world-readable `.key` files are quarantined as `.key.invalid` and replaced with a fresh key rather than failing startup.
 

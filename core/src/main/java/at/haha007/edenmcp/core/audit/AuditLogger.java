@@ -52,6 +52,12 @@ public final class AuditLogger {
         logger.warning("[AUDIT] auth-failure ts=" + Instant.now() + " caller=" + safe(caller));
     }
 
+    /** Records a file mutation by path only; file content must never reach the log. */
+    public void fileWrite(@Nullable String caller, @Nullable String path, String mode) {
+        logger.warning("[AUDIT] file-write ts=" + Instant.now() + " caller=" + safe(caller)
+                + " path=" + safe(path) + " mode=" + mode);
+    }
+
     /** Records a key rotation by id only; key material must never reach the log. */
     public void keyRotate(@Nullable String caller, @Nullable String keyId) {
         logger.warning("[AUDIT] key-rotate ts=" + Instant.now() + " caller=" + safe(caller)

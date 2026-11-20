@@ -151,7 +151,9 @@ public class McpIntegrationTest {
         assertTrue(hasTool(tools, "edenmcp.plugins.list"));
         assertTrue(hasTool(tools, "edenmcp.players.list"));
         assertTrue(hasTool(tools, "edenmcp.logs.read"));
-        assertTrue(hasTool(tools, "edenmcp.config.get"));
+        assertTrue(hasTool(tools, "edenmcp.file.list"));
+        assertTrue(hasTool(tools, "edenmcp.file.read"));
+        assertTrue(hasTool(tools, "edenmcp.file.write"));
         assertTrue(hasTool(tools, "edenmcp.mode.get"));
         assertTrue(hasTool(tools, "edenmcp.mode.set"));
         assertTrue(hasTool(tools, "edenmcp.hooks.list"));
@@ -191,7 +193,6 @@ public class McpIntegrationTest {
         JsonObject resp = rpc("resources/list", new JsonObject(), 220);
         JsonArray resources = resp.getAsJsonObject("result").getAsJsonArray("resources");
         assertNotNull(resources);
-        assertTrue(hasResource(resources, "edenmcp://config/snapshot"), "core resource missing: " + resources);
         assertTrue(hasResource(resources, "edenmcp://luckperms/groups"),
                 "LuckPerms hook should contribute a resource: " + resources);
         assertTrue(hasResource(resources, "edenmcp://spark/stats"),
@@ -301,7 +302,7 @@ public class McpIntegrationTest {
                 "resources/list without a session must be rejected");
 
         HttpResponse<String> resourceRead = sendRaw("/mcp",
-                "{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"resources/read\",\"params\":{\"uri\":\"edenmcp://config/snapshot\"}}", auth);
+                "{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"resources/read\",\"params\":{\"uri\":\"edenmcp://luckperms/groups\"}}", auth);
         assertTrue(JsonParser.parseString(resourceRead.body()).getAsJsonObject().has("error"),
                 "resources/read without a session must be rejected");
 
@@ -336,6 +337,12 @@ public class McpIntegrationTest {
         assertFalse(hasTool(safeTools, "edenmcp.command.dispatch"), "dispatch must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "edenmcp.mode.set"), "mode.set must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "edenmcp.chat.send"), "chat.send must be hidden in safe mode");
+        assertTrue(hasTool(safeTools, "edenmcp.file.list"), "file listings stay available in safe mode");
+        assertTrue(hasTool(safeTools, "edenmcp.file.read"), "file reads stay available in safe mode");
+        assertFalse(hasTool(safeTools, "edenmcp.file.write"), "file writes must be hidden in safe mode");
+        JsonObject deniedWrite = toolCall("edenmcp.file.write",
+                args("path", "denied.txt", "content", "no"), 116);
+        assertTrue(deniedWrite.get("isError").getAsBoolean(), "writes must be denied in safe mode: " + deniedWrite);
         assertFalse(hasTool(safeTools, "edenmcp.spark.profiler.control"),
                 "Spark profiler control must be hidden in safe mode");
         assertFalse(hasTool(safeTools, "edenmcp.luckperms.user.permission.set"),
@@ -551,12 +558,93 @@ public class McpIntegrationTest {
 
     @Test
     @Order(16)
-    void toolConfigGet() throws Exception {
-        JsonObject res = toolCall("edenmcp.config.get", new JsonObject(), 160);
-        assertFalse(res.get("isError").getAsBoolean(), res.toString());
-        JsonObject payload = payloadJson(res);
-        assertTrue(payload.has("mcp"), payload.toString());
-        assertTrue(payload.has("hooks"), payload.toString());
+    void toolFileList() throws Exception {
+        JsonObject root = toolCall("edenmcp.file.list", new JsonObject(), 160);
+        assertFalse(root.get("isError").getAsBoolean(), root.toString());
+        JsonObject rootPayload = payloadJson(root);
+        assertEquals(".", rootPayload.get("path").getAsString(), rootPayload.toString());
+        assertTrue(rootPayload.get("entries").toString().contains("server.properties"), rootPayload.toString());
+
+        JsonObject nested = toolCall("edenmcp.file.list", jsonObj("path", "plugins/EdenMcp"), 161);
+        assertFalse(nested.get("isError").getAsBoolean(), nested.toString());
+        assertTrue(payloadJson(nested).get("entries").toString().contains("config.yml"), nested.toString());
+
+        JsonObject traversal = toolCall("edenmcp.file.list", jsonObj("path", "../"), 162);
+        assertTrue(traversal.get("isError").getAsBoolean(), traversal.toString());
+
+        JsonObject recursive = toolCall("edenmcp.file.list",
+                args("path", "plugins", "recursive", true, "depth", 3), 163);
+        assertFalse(recursive.get("isError").getAsBoolean(), recursive.toString());
+        JsonObject recursivePayload = payloadJson(recursive);
+        assertTrue(recursivePayload.get("recursive").getAsBoolean(), recursivePayload.toString());
+        assertEquals(3, recursivePayload.get("depth").getAsInt(), recursivePayload.toString());
+        assertTrue(recursivePayload.get("entries").toString().contains("plugins/EdenMcp/config.yml"),
+                recursivePayload.toString());
+        assertFalse(recursivePayload.get("truncated").getAsBoolean(), recursivePayload.toString());
+
+        JsonObject globals = toolCall("edenmcp.file.list",
+                args("path", "plugins", "recursive", true, "pattern", "**/*.yml"), 164);
+        assertFalse(globals.get("isError").getAsBoolean(), globals.toString());
+        String globEntries = payloadJson(globals).get("entries").toString();
+        assertTrue(globEntries.contains("config.yml"), globEntries);
+        assertFalse(globEntries.contains("latest.log"), globEntries);
+
+        JsonObject badGlob = toolCall("edenmcp.file.list",
+                args("path", "plugins", "recursive", true, "pattern", "["), 165);
+        assertTrue(badGlob.get("isError").getAsBoolean(), badGlob.toString());
+        JsonObject badDepth = toolCall("edenmcp.file.list",
+                args("path", "plugins", "recursive", true, "depth", 999), 166);
+        assertTrue(badDepth.get("isError").getAsBoolean(), badDepth.toString());
+    }
+
+    @Test
+    @Order(40)
+    void toolFileReadWrite() throws Exception {
+        JsonObject read = toolCall("edenmcp.file.read", jsonObj("path", "server.properties"), 401);
+        assertFalse(read.get("isError").getAsBoolean(), read.toString());
+        JsonObject readPayload = payloadJson(read);
+        assertTrue(readPayload.get("content").getAsString().contains("server-port=25590"), readPayload.toString());
+        assertEquals("server.properties", readPayload.get("path").getAsString(), readPayload.toString());
+
+        JsonObject traversal = toolCall("edenmcp.file.read", jsonObj("path", "../outside.txt"), 402);
+        assertTrue(traversal.get("isError").getAsBoolean(), traversal.toString());
+
+        String path = "plugins/EdenMcp/file-tool-test.txt";
+        JsonObject written = toolCall("edenmcp.file.write", args("path", path, "content", "hello\n"), 403);
+        assertFalse(written.get("isError").getAsBoolean(), written.toString());
+        assertEquals("hello\n", Files.readString(serverDir.resolve(path)));
+
+        JsonObject reread = toolCall("edenmcp.file.read", jsonObj("path", path), 404);
+        assertEquals("hello\n", payloadJson(reread).get("content").getAsString(), reread.toString());
+
+        JsonObject badWrite = toolCall("edenmcp.file.write",
+                args("path", "../outside.txt", "content", "hello"), 405);
+        assertTrue(badWrite.get("isError").getAsBoolean(), badWrite.toString());
+
+        JsonObject multiLine = toolCall("edenmcp.file.write",
+                args("path", path, "content", "a\nb\nc\n"), 406);
+        assertFalse(multiLine.get("isError").getAsBoolean(), multiLine.toString());
+
+        JsonObject page = toolCall("edenmcp.file.read",
+                args("path", path, "offset", 1, "limit", 1), 407);
+        assertFalse(page.get("isError").getAsBoolean(), page.toString());
+        JsonObject pagePayload = payloadJson(page);
+        assertEquals("b\n", pagePayload.get("content").getAsString(), pagePayload.toString());
+        assertEquals(1, pagePayload.get("lineStart").getAsInt(), pagePayload.toString());
+        assertEquals(1, pagePayload.get("lineCount").getAsInt(), pagePayload.toString());
+        assertTrue(pagePayload.get("hasMore").getAsBoolean(), pagePayload.toString());
+
+        JsonObject lastPage = toolCall("edenmcp.file.read",
+                args("path", path, "offset", 2, "limit", 10), 408);
+        assertEquals("c\n", payloadJson(lastPage).get("content").getAsString(), lastPage.toString());
+        assertFalse(payloadJson(lastPage).get("hasMore").getAsBoolean(), lastPage.toString());
+
+        JsonObject badOffset = toolCall("edenmcp.file.read",
+                args("path", path, "offset", -1), 409);
+        assertTrue(badOffset.get("isError").getAsBoolean(), badOffset.toString());
+        JsonObject badLimit = toolCall("edenmcp.file.read",
+                args("path", path, "limit", 0), 410);
+        assertTrue(badLimit.get("isError").getAsBoolean(), badLimit.toString());
     }
 
     @Test

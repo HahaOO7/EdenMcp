@@ -5,15 +5,14 @@ import at.haha007.edenmcp.api.EdenMcpApiAvailableEvent;
 import at.haha007.edenmcp.core.audit.AuditLogger;
 import at.haha007.edenmcp.core.auth.AccessKeyManager;
 import at.haha007.edenmcp.core.auth.Principal;
-import at.haha007.edenmcp.core.config.ConfigRedactor;
 import at.haha007.edenmcp.core.config.EdenConfig;
 import at.haha007.edenmcp.api.HookContext;
 import at.haha007.edenmcp.core.hook.HookManager;
 import at.haha007.edenmcp.api.OperatingMode;
 import at.haha007.edenmcp.core.policy.SecurityPolicy;
-import at.haha007.edenmcp.api.McpResource;
 import at.haha007.edenmcp.core.tool.ToolRegistry;
 import at.haha007.edenmcp.core.transport.McpHttpServer;
+import at.haha007.edenmcp.core.util.ServerFileAccess;
 import at.haha007.edenmcp.integration.EdenMcpApiImpl;
 import at.haha007.edenmcp.hooks.luckperms.LuckPermsHook;
 import at.haha007.edenmcp.hooks.spark.SparkHook;
@@ -33,7 +32,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -107,16 +105,17 @@ public final class EdenMcpPlugin extends JavaPlugin {
             registry.register(new ModeSetTool(modeRef, audit, m -> {
                 if (httpServer != null) httpServer.broadcastModeChange(m);
             }, securityPolicy));
-            registry.register(new ConfigGetTool(this::buildConfigSnapshot));
+            ServerFileAccess serverFiles = new ServerFileAccess(Path.of("").toAbsolutePath());
+            registry.register(new FileListTool(serverFiles, edenConfig.tools().filesMaxListEntries(),
+                    edenConfig.tools().filesMaxListDepth()));
+            registry.register(new FileReadTool(serverFiles, edenConfig.tools().filesMaxReadBytes()));
+            registry.register(new FileWriteTool(serverFiles, edenConfig.tools().filesMaxWriteBytes(), audit));
             registry.register(new LogsReadTool(resolveLogPath(), edenConfig.policy().logsRequireModerate(), edenConfig.tools()));
             registry.register(new ChatSendTool(this, getLogger(), edenConfig.logVerbose(), edenConfig.tools()));
             registry.register(commandDispatchTool);
 
-            // Core read-only resource: same redacted snapshot as edenmcp.config.get.
-            hookManager.resources().register(McpResource.text(
-                    "edenmcp://config/snapshot", "EdenMcp configuration snapshot",
-                    "Redacted EdenMcp configuration and runtime state (JSON).", "application/json",
-                    () -> ConfigRedactor.redact(buildConfigSnapshot(), "")));
+            // Config/state snapshots are no longer exposed; edenmcp.file.read can read
+            // the server's config files directly, and mode/hooks have their own tools.
 
             hookManager.enableAvailableHooks(getServer());
 
@@ -126,7 +125,7 @@ public final class EdenMcpPlugin extends JavaPlugin {
             getServer().getPluginManager().registerEvents(new HookCleanupListener(), this);
             getServer().getPluginManager().callEvent(new EdenMcpApiAvailableEvent(api));
 
-            httpServer = new McpHttpServer(edenConfig, keyManager, registry, hookManager, audit, getLogger(), modeRef, this::buildConfigSnapshot);
+            httpServer = new McpHttpServer(edenConfig, keyManager, registry, hookManager, audit, getLogger(), modeRef, Map::of);
             httpServer.start(getDataFolder().toPath());
 
             if (edenConfig.transport().bind() != null && !edenConfig.transport().bind().equals("127.0.0.1") && !edenConfig.transport().bind().equalsIgnoreCase("localhost")) {
@@ -264,45 +263,4 @@ public final class EdenMcpPlugin extends JavaPlugin {
         return p.toAbsolutePath();
     }
 
-    private Map<String, Object> buildConfigSnapshot() {
-        Map<String, Object> root = new LinkedHashMap<>();
-        // Full config exposure with redaction applied by tool
-        FileConfiguration cfg = getConfig();
-        root.put("mcp", sectionToMap(cfg.getConfigurationSection("mcp")));
-        root.put("hooks", sectionToMap(cfg.getConfigurationSection("hooks")));
-        root.put("commands", sectionToMap(cfg.getConfigurationSection("commands")));
-        root.put("audit", sectionToMap(cfg.getConfigurationSection("audit")));
-
-        Map<String, Object> state = new LinkedHashMap<>();
-        state.put("activeMode", modeRef.get().name().toLowerCase());
-        state.put("hooks", hookManager != null ? hookManager.describeHooks() : java.util.List.of());
-        root.put("state", state);
-        return root;
-    }
-
-    private @Nullable Object sectionToMap(@Nullable Object obj) {
-        return switch (obj) {
-            case null -> null;
-            case org.bukkit.configuration.ConfigurationSection sec -> {
-                Map<String, Object> m = new LinkedHashMap<>();
-                for (String k : sec.getKeys(false)) {
-                    Object v = sec.get(k);
-                    m.put(k, sectionToMap(v));
-                }
-                // include values that might not be sections but lists/maps
-                yield m;
-            }
-            case java.util.List<?> list -> {
-                java.util.List<Object> out = new java.util.ArrayList<>();
-                for (Object i : list) out.add(sectionToMap(i));
-                yield out;
-            }
-            case Map<?, ?> map -> {
-                Map<String, Object> out = new LinkedHashMap<>();
-                for (Map.Entry<?, ?> e : map.entrySet()) out.put(String.valueOf(e.getKey()), sectionToMap(e.getValue()));
-                yield out;
-            }
-            default -> obj;
-        };
-    }
 }

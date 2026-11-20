@@ -58,6 +58,11 @@ mcp:
       # max-limit: 500
       # max-scan-bytes: 1048576
       # max-pattern-length: 200
+    files:
+      # max-read-bytes: 4194304   # maximum text file size returned by edenmcp.file.read
+      # max-write-bytes: 1048576  # maximum content size accepted by edenmcp.file.write
+      # max-list-entries: 500     # maximum entries returned by edenmcp.file.list
+      # max-list-depth: 10        # maximum recursion depth for edenmcp.file.list
 
 hooks:
   luckperms:

@@ -64,9 +64,12 @@ public record EdenConfig(
     public record ToolConfig(long chatMinIntervalMs, int chatSyncTimeoutSeconds,
                              int commandDispatchTimeoutSeconds,
                              int logsDefaultLimit, int logsMaxLimit,
-                             int logsMaxScanBytes, int logsMaxPatternLength) {
+                             int logsMaxScanBytes, int logsMaxPatternLength,
+                             int filesMaxReadBytes, int filesMaxWriteBytes, int filesMaxListEntries,
+                             int filesMaxListDepth) {
         public static ToolConfig defaults() {
-            return new ToolConfig(250, 5, 10, 100, 500, 1024 * 1024, 200);
+            return new ToolConfig(250, 5, 10, 100, 500, 1024 * 1024, 200,
+                    4 * 1024 * 1024, 1024 * 1024, 500, 10);
         }
     }
 
@@ -136,9 +139,14 @@ public record EdenConfig(
         int logsMaxLimit = Math.max(logsDefaultLimit, cfg.getInt("mcp.tools.logs.max-limit", 500));
         int logsMaxScanBytes = Math.max(1024, cfg.getInt("mcp.tools.logs.max-scan-bytes", 1024 * 1024));
         int logsMaxPatternLength = Math.max(1, cfg.getInt("mcp.tools.logs.max-pattern-length", 200));
+        int filesMaxReadBytes = Math.max(1024, cfg.getInt("mcp.tools.files.max-read-bytes", 4 * 1024 * 1024));
+        int filesMaxWriteBytes = Math.max(1024, cfg.getInt("mcp.tools.files.max-write-bytes", 1024 * 1024));
+        int filesMaxListEntries = Math.max(1, cfg.getInt("mcp.tools.files.max-list-entries", 500));
+        int filesMaxListDepth = Math.max(1, cfg.getInt("mcp.tools.files.max-list-depth", 10));
         ToolConfig tools = new ToolConfig(chatMinIntervalMs, chatSyncTimeoutSeconds,
                 commandDispatchTimeoutSeconds, logsDefaultLimit, logsMaxLimit,
-                logsMaxScanBytes, logsMaxPatternLength);
+                logsMaxScanBytes, logsMaxPatternLength, filesMaxReadBytes, filesMaxWriteBytes,
+                filesMaxListEntries, filesMaxListDepth);
 
         boolean logCalls = cfg.getBoolean("audit.log-tool-calls", true);
         boolean logMode = cfg.getBoolean("audit.log-mode-changes", true);
