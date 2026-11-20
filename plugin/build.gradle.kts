@@ -20,6 +20,7 @@ val integrationPaperJarProvider = layout.buildDirectory.file("integration-paper/
 val paperJarOverride = providers.gradleProperty("integration.paperJar")
 
 dependencies {
+    implementation(project(":api"))
     implementation(project(":core"))
     implementation(project(":hooks:luckperms"))
     implementation(project(":hooks:spark"))

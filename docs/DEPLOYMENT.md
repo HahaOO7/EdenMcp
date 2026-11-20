@@ -26,8 +26,8 @@ No extra configuration is required for these:
 - Request bodies, JSON-RPC batches, SSE connections, and the HTTP worker pool are bounded.
 - TLS uses TLS 1.2/1.3 with AEAD ciphers only. The keystore and its random password file are owner-only. The certificate fingerprint is logged at every startup.
 - MCP calls use sessions: `initialize` returns an `Mcp-Session-Id` (header and result), and `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `initialized` require it. Sessions are bound to the key that created them and expire after idle timeout. `ping` needs no session. Most MCP clients handle this automatically.
-- Commands/chat are logged as metadata, not verbatim, so `eden.logs.read` cannot expose message content by default. Log filters are bounded against regex abuse.
-- `eden.command.dispatch` is `UNSAFE_ACTION` and is never advertised or callable in `safe` or `moderate` mode. Command classification rules are always anchored to the whole command.
+- Commands/chat are logged as metadata, not verbatim, so `edenmcp.logs.read` cannot expose message content by default. Log filters are bounded against regex abuse.
+- `edenmcp.command.dispatch` is `UNSAFE_ACTION` and is never advertised or callable in `safe` or `moderate` mode. Command classification rules are always anchored to the whole command.
 
 ## Optional hardening
 
@@ -57,11 +57,11 @@ mcp:
     multi-key-directory: keys             # optional extra owner-only key files
   policy:
     allow-unsafe-at-runtime: false        # require 'mcp mode set unsafe' from console
-    logs-require-moderate: true           # hide eden.logs.read in safe mode
+    logs-require-moderate: true           # hide edenmcp.logs.read in safe mode
   tools:
     chat-min-interval-ms: 250             # 0 disables chat throttling
     logs:
-      max-limit: 500                      # cap lines returned by eden.logs.read
+      max-limit: 500                      # cap lines returned by edenmcp.logs.read
       max-scan-bytes: 1048576
       max-pattern-length: 200             # cap regex filter length
 audit:

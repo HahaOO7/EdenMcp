@@ -12,7 +12,7 @@ The MCP endpoint runs on its own HTTP port and supports remote access. It is aut
 - **Session handling** — `initialize` issues an `Mcp-Session-Id`; sessions are principal-bound, idle-expiring, and invalidated on key rotation
 - **Auditing with redaction** — tool calls and mode changes are logged, while commands/chat messages and secrets are redacted by default
 - **Server-authoritative hooks** — integrations contribute tools through a small SPI; currently LuckPerms (read-only lookups) and Spark (profiling, diagnostics, raw data)
-- **Hardened defaults** — bounded request bodies/batches/SSE clients, Host/Origin validation, no CORS headers unless configured, and secret redaction in `eden.config.get`
+- **Hardened defaults** — bounded request bodies/batches/SSE clients, Host/Origin validation, no CORS headers unless configured, and secret redaction in `edenmcp.config.get`
 
 ## Requirements
 
@@ -92,52 +92,78 @@ All `mcp` subcommands require the `edenmcp.admin` permission (granted to operato
 | Mode | Capabilities |
 | --- | --- |
 | `safe` (default) | Read-only inspection: status, logs, config snapshot, players, plugins, hooks, mode, Spark statistics/profiler status/raw data |
-| `moderate` | Everything in `safe`, plus chat, `eden.mode.set`, Spark profiler control and diagnostic commands |
+| `moderate` | Everything in `safe`, plus chat, `edenmcp.mode.set`, Spark profiler control and diagnostic commands |
 | `unsafe` | Everything above, plus console command dispatch and privileged hook actions |
 
-Tools are filtered by mode before they are advertised, so clients never see tools they cannot execute. Mode changes take effect immediately for subsequent discovery and calls. By default an authenticated client can escalate to `unsafe` via `eden.mode.set`; set `mcp.policy.allow-unsafe-at-runtime: false` to restrict that to the server console.
+Tools are filtered by mode before they are advertised, so clients never see tools they cannot execute. Mode changes take effect immediately for subsequent discovery and calls. By default an authenticated client can escalate to `unsafe` via `edenmcp.mode.set`; set `mcp.policy.allow-unsafe-at-runtime: false` to restrict that to the server console.
 
 ## MCP tools
 
 Read-only (`safe`):
 
-- `eden.server.status` — version, TPS/MSPT, players, uptime, worlds
-- `eden.players.list` — online players and metadata
-- `eden.plugins.list` — installed plugins and enabled state
-- `eden.hooks.list` — available/enabled hooks
-- `eden.logs.read` — bounded recent log lines with optional filter
-- `eden.config.get` — config/state snapshot with secrets redacted
-- `eden.mode.get` — current mode
-- `eden.luckperms.user.lookup`, `eden.luckperms.groups.list` — when LuckPerms is installed
-- `eden.spark.stats.cpu`, `eden.spark.stats.tps`, `eden.spark.stats.mspt`, `eden.spark.stats.gc` — Spark's performance statistics with optional windows
-- `eden.spark.profiler.info` — current Spark profiler status
-- `eden.spark.data.list`, `eden.spark.data.read`, `eden.spark.data.inspect` — bounded access to raw Spark profile/heap files; `inspect` decodes protobuf structure locally
+- `edenmcp.server.status` — version, TPS/MSPT, players, uptime, worlds
+- `edenmcp.players.list` — online players and metadata
+- `edenmcp.plugins.list` — installed plugins and enabled state
+- `edenmcp.hooks.list` — available/enabled hooks
+- `edenmcp.logs.read` — bounded recent log lines with optional filter
+- `edenmcp.config.get` — config/state snapshot with secrets redacted
+- `edenmcp.mode.get` — current mode
+- `edenmcp.luckperms.user.lookup`, `edenmcp.luckperms.groups.list` — when LuckPerms is installed
+- `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc` — Spark's performance statistics with optional windows
+- `edenmcp.spark.profiler.info` — current Spark profiler status
+- `edenmcp.spark.data.list`, `edenmcp.spark.data.read`, `edenmcp.spark.data.inspect` — bounded access to raw Spark profile/heap files; `inspect` decodes protobuf structure locally
 
-Read-only resource: `eden://spark/stats` returns an aggregated CPU/TPS/MSPT/GC snapshot.
+Read-only resource: `edenmcp://spark/stats` returns an aggregated CPU/TPS/MSPT/GC snapshot.
 
 Moderate:
 
-- `eden.chat.send` — send a message to a player or broadcast (throttled via `mcp.tools.chat-min-interval-ms`, attributable)
-- `eden.mode.set` — change the operating mode (audited)
-- `eden.spark.profiler.control` — start/stop/cancel the profiler; **results are always saved locally, never uploaded**
-- `eden.spark.diagnostics.run` — bounded tick/GC monitor toggles, heap dumps (local files), TPS/GC reports
+- `edenmcp.chat.send` — send a message to a player or broadcast (throttled via `mcp.tools.chat-min-interval-ms`, attributable)
+- `edenmcp.mode.set` — change the operating mode (audited)
+- `edenmcp.spark.profiler.control` — start/stop/cancel the profiler; **results are always saved locally, never uploaded**
+- `edenmcp.spark.diagnostics.run` — bounded tick/GC monitor toggles, heap dumps (local files), TPS/GC reports
 
 Unsafe:
 
-- `eden.command.dispatch` — execute a console command (strongly audited; cannot be reclassified below `unsafe`)
+- `edenmcp.command.dispatch` — execute a console command (strongly audited; cannot be reclassified below `unsafe`)
 
 ## Project structure
 
 ```text
-core/                    MCP transport, auth, mode/capability policy, tool registry, hook SPI
+api/                     Published, stable API for third-party hooks (JitPack artifact)
+core/                    MCP transport, auth, mode/capability policy, tool registries, HookManager
 plugin/                  Paper plugin bootstrap, built-in tools, console commands, resources
 hooks/luckperms/         LuckPerms integration module (read-only tools)
 hooks/spark/             Spark profiling hook (statistics, control, diagnostics, raw data)
 docs/DESIGN.md           Architecture, capability model, and design decisions
+docs/HOOK_API.md         Public hook/tool registration API
 docs/DEPLOYMENT.md       Installation, TLS/auth setup, and optional hardening
 ```
 
 `core` holds protocol and policy logic independently of plugin lifecycle concerns; `plugin` assembles the system and registers hooks; each `hooks/<name>` module integrates one external plugin/API.
+
+## Extending EdenMcp from another plugin
+
+Other plugins can register MCP tools and resources at runtime through the `api` artifact, which
+is published via JitPack:
+
+```kotlin
+repositories { maven("https://jitpack.io") }
+dependencies { compileOnly("com.github.haha007.EdenMcp:edenmcp-api:1.0") }
+```
+
+Declare `softdepend: [EdenMcp]` in `plugin.yml`, then look up the service and register a hook:
+
+```java
+var provider = Bukkit.getServicesManager().getRegistration(EdenMcpApi.class);
+if (provider != null) {
+    Registration registration = provider.getProvider().registerHook(this, myHook);
+}
+```
+
+Tool names must use `edenmcp.<hookId>.*` and resource URIs `edenmcp://<hookId>/*`. External hooks
+are capped at `moderate` capabilities by default; an operator can raise the cap per hook in
+`hooks.external.overrides`. See [docs/HOOK_API.md](docs/HOOK_API.md) for the full contract,
+lifecycle and examples.
 
 ## Security notes
 

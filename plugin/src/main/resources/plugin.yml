@@ -1,7 +1,7 @@
 name: EdenMcp
 version: '${version}'
 
-main: at.haha007.edenMcp.EdenMcpPlugin
+main: at.haha007.edenmcp.EdenMcpPlugin
 api-version: '26.3'
 load: POSTWORLD
 softdepend: [ spark ]

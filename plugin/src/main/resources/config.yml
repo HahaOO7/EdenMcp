@@ -47,7 +47,7 @@ mcp:
 
   policy:
     # allow-unsafe-at-runtime: true  # set false to require the server console for 'unsafe'
-    # logs-require-moderate: false   # set true to hide eden.logs.read in safe mode
+    # logs-require-moderate: false   # set true to hide edenmcp.logs.read in safe mode
 
   tools:
     # chat-min-interval-ms: 250       # global chat throttle; 0 disables it
@@ -64,6 +64,16 @@ hooks:
     enabled: true
   spark:
     enabled: true
+  # Server-authoritative policy for hooks registered by other plugins via the EdenMcp API.
+  external:
+    default-enabled: true
+    max-capability-level: moderate   # safe | moderate | unsafe
+    allow-dangerous-side-effects: false
+    overrides: {}
+    #  myplugin:
+    #    enabled: true
+    #    max-capability-level: unsafe
+    #    allow-dangerous-side-effects: true
 
 commands:
   # Command dispatch is UNSAFE_ACTION and is never advertised in safe/moderate mode.

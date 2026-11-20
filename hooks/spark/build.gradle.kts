@@ -1,5 +1,5 @@
 dependencies {
-    implementation(project(":core"))
+    implementation(project(":api"))
     compileOnly("io.papermc.paper:paper-api:${providers.gradleProperty("paperApiVersion").get()}")
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))

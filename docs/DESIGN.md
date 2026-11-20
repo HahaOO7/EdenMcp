@@ -6,7 +6,8 @@ EdenMcp is a Paper plugin that exposes a [Model Context Protocol (MCP)](https://
 
 The project is structured as a small multi-module Gradle build:
 
-- **`core`** – MCP server, transport, capability/mode enforcement, tool registry, hook SPI, and shared domain types. Depends only on the Paper API (and MCP/transport libraries as needed); no plugin bootstrap logic.
+- **`api`** – published, stable contract for third-party hooks (`EdenMcpApi`, `Hook`, tool/resource types). No dependency on `core`; released through JitPack.
+- **`core`** – MCP server, transport, capability/mode enforcement, tool registries, and `HookManager`. Depends on `api`; no plugin bootstrap logic.
 - **`plugin`** – Paper plugin entrypoint (`EdenMcpPlugin`). Assembles the system: loads server-side configuration, wires lifecycle, and registers/boots built-in hooks from `hooks/*` into `core`.
 - **`hooks/<name>`** – One module per integrated plugin/API (currently `hooks/luckperms` and `hooks/spark`). Each hook contributes tools/resources for that specific target and is isolated from other hooks.
 
@@ -37,7 +38,7 @@ EdenMcp runs in exactly one mode at a time. The mode is configured on the server
 | `unsafe` | Full administrative control. | Everything in `moderate`, plus console/command dispatch, privileged hook actions, and any tool classified as dangerous. |
 
 **Runtime mode changes**
-- Exposed as an authorized control operation (`eden.mode.set` / `eden.mode.get`) at `MODERATE_ACTION`, so it is callable only with a valid access key in `moderate` or `unsafe` mode, never in `safe`.
+- Exposed as an authorized control operation (`edenmcp.mode.set` / `edenmcp.mode.get`) at `MODERATE_ACTION`, so it is callable only with a valid access key in `moderate` or `unsafe` mode, never in `safe`.
 - Mode changes take effect immediately for subsequent tool discovery and execution.
 - All mode changes are audited (previous mode, new mode, caller/session, timestamp).
 - `unsafe` transitions must be prominently logged.
@@ -91,28 +92,28 @@ Suggested mapping:
 ## MCP Surface (initial)
 
 ### Safe (read-only) tools/resources
-- `eden.logs.read` – read recent server log lines with optional filter/limit (bounded).
-- `eden.config.get` – read server/EdenMcp configuration and state (full exposure of available config as requested); **secrets (access key/tokens/credentials) must always be redacted**.
-- `eden.server.status` – version, TPS/MSPT, player counts, uptime, loaded worlds.
-- `eden.players.list` – online players and available metadata.
-- `eden.plugins.list` – installed plugins and enabled state.
-- `eden.hooks.list` – server-provided hooks and their availability/enabled state (read-only discovery).
-- `eden.mode.get` – current operating mode.
+- `edenmcp.logs.read` – read recent server log lines with optional filter/limit (bounded).
+- `edenmcp.config.get` – read server/EdenMcp configuration and state (full exposure of available config as requested); **secrets (access key/tokens/credentials) must always be redacted**.
+- `edenmcp.server.status` – version, TPS/MSPT, player counts, uptime, loaded worlds.
+- `edenmcp.players.list` – online players and available metadata.
+- `edenmcp.plugins.list` – installed plugins and enabled state.
+- `edenmcp.hooks.list` – server-provided hooks and their availability/enabled state (read-only discovery).
+- `edenmcp.mode.get` – current operating mode.
 - Hook-provided read tools (e.g. LuckPerms lookups) when available.
-- Spark (`SAFE_READ`): `eden.spark.stats.cpu`, `eden.spark.stats.tps`, `eden.spark.stats.mspt`, `eden.spark.stats.gc`, `eden.spark.profiler.info`, and `eden.spark.data.list`/`read`/`inspect` for bounded access to locally saved raw profile/heap files. Raw protobuf inspection is schema-free and done locally; no data is uploaded.
+- Spark (`SAFE_READ`): `edenmcp.spark.stats.cpu`, `edenmcp.spark.stats.tps`, `edenmcp.spark.stats.mspt`, `edenmcp.spark.stats.gc`, `edenmcp.spark.profiler.info`, and `edenmcp.spark.data.list`/`read`/`inspect` for bounded access to locally saved raw profile/heap files. Raw protobuf inspection is schema-free and done locally; no data is uploaded.
 
 ### Moderate tools
-- `eden.chat.send` – send a message to a player or broadcast; rate-limited and attributable (prefix/logged).
-- Hook-provided moderate actions explicitly marked safe-mutation, including `eden.spark.profiler.control` and `eden.spark.diagnostics.run`. Spark results are always saved locally (`--save-to-file`); uploading is not exposed.
+- `edenmcp.chat.send` – send a message to a player or broadcast; rate-limited and attributable (prefix/logged).
+- Hook-provided moderate actions explicitly marked safe-mutation, including `edenmcp.spark.profiler.control` and `edenmcp.spark.diagnostics.run`. Spark results are always saved locally (`--save-to-file`); uploading is not exposed.
 
 ### Unsafe tools
-- `eden.command.dispatch` – execute a console command (**`UNSAFE_ACTION` by default**, highest risk; strongly audited).
+- `edenmcp.command.dispatch` – execute a console command (**`UNSAFE_ACTION` by default**, highest risk; strongly audited).
 - Hook-provided privileged actions (e.g. permission mutations, if a hook exposes them) and any hook tool marked dangerous.
 
-**Server-configurable command classification:** the server defines an ordered list of regex rules to override the required level for specific commands, reclassifying matched commands as `MODERATE_ACTION` or `SAFE_READ` where appropriate. Each rule pairs a `level` with a regex `pattern` matched against the dispatched command string; rules are evaluated in order and the **first match wins**. Patterns are **always anchored to the whole command**: unanchored rules are automatically wrapped as `^(?:...)$` with a warning, so a rule cannot downgrade a command by matching a prefix. Before matching, commands are normalized (leading `/` removed, whitespace collapsed) and any command containing control characters or separators (`;`, `&&`, `||`, backticks, `$()`) is rejected and treated as `UNSAFE_ACTION`, preventing a SAFE rule from hiding a chained dangerous command. Overrides are server-side configuration only, evaluated before execution (in addition to the active mode gate), and all command executions remain audited. Unmatched commands keep the default `UNSAFE_ACTION` classification. Crucially, `eden.command.dispatch` itself declares `UNSAFE_ACTION`, so per-command classification can never make the generic dispatch tool callable below `unsafe` or be used to escalate modes.
+**Server-configurable command classification:** the server defines an ordered list of regex rules to override the required level for specific commands, reclassifying matched commands as `MODERATE_ACTION` or `SAFE_READ` where appropriate. Each rule pairs a `level` with a regex `pattern` matched against the dispatched command string; rules are evaluated in order and the **first match wins**. Patterns are **always anchored to the whole command**: unanchored rules are automatically wrapped as `^(?:...)$` with a warning, so a rule cannot downgrade a command by matching a prefix. Before matching, commands are normalized (leading `/` removed, whitespace collapsed) and any command containing control characters or separators (`;`, `&&`, `||`, backticks, `$()`) is rejected and treated as `UNSAFE_ACTION`, preventing a SAFE rule from hiding a chained dangerous command. Overrides are server-side configuration only, evaluated before execution (in addition to the active mode gate), and all command executions remain audited. Unmatched commands keep the default `UNSAFE_ACTION` classification. Crucially, `edenmcp.command.dispatch` itself declares `UNSAFE_ACTION`, so per-command classification can never make the generic dispatch tool callable below `unsafe` or be used to escalate modes.
 
 ### Control tools
-- `eden.mode.set` – change operating mode at runtime (`MODERATE_ACTION`, authorized, audited). Escalation to `unsafe` is allowed by default but can be locked by an operator via `mcp.policy.allow-unsafe-at-runtime: false`, which leaves the server console as the only way to enter `unsafe`.
+- `edenmcp.mode.set` – change operating mode at runtime (`MODERATE_ACTION`, authorized, audited). Escalation to `unsafe` is allowed by default but can be locked by an operator via `mcp.policy.allow-unsafe-at-runtime: false`, which leaves the server console as the only way to enter `unsafe`.
 
 > The key properties are access-key gating, level classification, and mode-filtered exposure/execution; the tool list above matches the shipped plugin.
 
@@ -120,45 +121,52 @@ Suggested mapping:
 
 Resources are read-only observations exposed through the MCP resource methods. `resources/list` returns every registered resource (URI, name, optional description/mimeType, and optional `_meta`); `resources/read` takes a `uri` and returns one `contents` entry with `uri`, `mimeType`, and `text` (JSON values are serialized by the transport). Resources have no capability level above `SAFE_READ` and stay visible in every mode. A resource read is authenticated and session-bound just like a tool call; unknown URIs and reader failures produce JSON-RPC errors and are audited.
 
-Shipped resources: `eden://config/snapshot` (the same redacted configuration/state snapshot as `eden.config.get`), `eden://luckperms/groups` when LuckPerms is present, and `eden://spark/stats` when Spark is present (aggregated CPU/TPS/MSPT/GC snapshot).
+Shipped resources: `edenmcp://config/snapshot` (the same redacted configuration/state snapshot as `edenmcp.config.get`), `edenmcp://luckperms/groups` when LuckPerms is present, and `edenmcp://spark/stats` when Spark is present (aggregated CPU/TPS/MSPT/GC snapshot).
 
 ## Hook / Plugin Integration SPI
 
-Hooks let EdenMcp integrate with other plugins without coupling `core` to them. **Available hooks are provided and enabled by the server**, assembled by the `plugin` module from the `hooks/*` modules; clients discover and use what the server exposes but do not configure which hooks exist.
+Hooks let EdenMcp integrate with other plugins without coupling `core` to them. **Available hooks are provided and enabled by the server**: built-ins are assembled by the `plugin` module, and third-party plugins register hooks at runtime through the published `api` service. Clients only discover what the server exposes; they never configure which hooks exist. See [HOOK_API.md](HOOK_API.md) for the full public contract.
 
-### Contract (core)
+### Contract (`api`)
 
 ```java
-interface EdenHook {
-    String id();                          // e.g. "luckperms"
-    boolean isAvailable(Server server);   // target plugin/API present
-    HookContribution contribute(HookContext ctx);
+interface EdenMcpApi {
+    HookRegistration registerHook(Plugin owner, Hook hook);
+    Registration registerTool(Plugin owner, McpTool tool);
+    Registration registerResource(Plugin owner, McpResource resource);
+    List<HookInfo> hooks();
+    boolean isAcceptingRegistrations();
 }
 
-record HookContribution(
-    List<McpTool> tools,
-    List<McpResource> resources,
-    Optional<Runnable> onEnable,
-    Optional<Runnable> onDisable
-) {}
+interface Hook {
+    String id();                          // e.g. "luckperms"
+    default boolean isAvailable(Server server) { return true; }
+    HookContribution contribute(HookContext ctx);
+    default void onEnable() {}
+    default void onDisable() {}
+}
+
+record HookContribution(List<McpTool> tools, List<McpResource> resources) {}
 ```
 
-- Hooks are explicitly wired/registered by `plugin` from known hook modules; only hooks whose `isAvailable` is true (and that are enabled server-side) contribute.
+- The API is published through Bukkit's `ServicesManager` and discovered by other plugins; `EdenMcpApiAvailableEvent` supports plugins that load earlier.
+- Tool names must be `edenmcp.<hookId>.*` and resource URIs `edenmcp://<hookId>/*`. Violations are skipped with a warning and reported in `HookInfo.skipped()`.
+- External hooks are capped at `MODERATE_ACTION` and may not declare `DANGEROUS` side effects unless an operator opts in under `hooks.external`. Built-in hooks are server-authoritative and are not capped.
 - Each contributed tool carries its own `level`/`sideEffects`; the hook cannot bypass mode or access-key enforcement. Contributed resources are read-only and carry a `reader` that produces content for `resources/read`.
-- Hook failures are isolated: a throwing hook must not break core MCP availability (log and degrade gracefully). Tools and resources are registered only after `onEnable` succeeds; any partial registration is rolled back instance-by-instance, so a failed hook never leaves callable tools or readable resources behind. `describeHooks()` reports both contributed tool names and resource URIs.
-- Each hook module covers exactly one external plugin/API integration.
+- Hook failures are isolated: a throwing hook must not break core MCP availability. Tools and resources are registered only after `onEnable` succeeds; partial registrations are rolled back instance-by-instance. `HookInfo` reports enabled state, contributions, skipped items and the last error.
+- EdenMcp unregisters all hooks owned by a plugin when that plugin disables; `Registration#unregister()` allows explicit cleanup.
 
 ### Example: LuckPerms (`hooks:luckperms`)
 
 **Availability:** LuckPerms API present.
 
-The hook contributes two read-only (`SAFE_READ`) tools: `eden.luckperms.user.lookup` and `eden.luckperms.groups.list`, plus the `eden://luckperms/groups` resource. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
+The hook contributes two read-only (`SAFE_READ`) tools: `edenmcp.luckperms.user.lookup` and `edenmcp.luckperms.groups.list`, plus the `edenmcp://luckperms/groups` resource. Privileged mutations (group/user permission changes) are deliberately not exposed; if a hook adds them later they must be classified `UNSAFE_ACTION`.
 
 ### Example: Spark (`hooks:spark`)
 
 **Availability:** Paper's bundled `spark` plugin is loaded (`softdepend` ensures it precedes EdenMcp).
 
-Spark's public API is accessed reflectively so no snapshot repository or shaded API copy is required. The hook contributes read-only statistics tools, profiler status, a raw-data toolset (list, chunked base64 read, schema-free protobuf structure inspection), and the `eden://spark/stats` resource. Profiler/diagnostic commands are built from strict allowlists, dispatched on the server thread with a captured reply, and audited; results are saved locally and never uploaded. Raw files are restricted to Spark's own directory, to `.sparkprofile`/`.hprof` extensions, and to simple file names to prevent traversal.
+Spark's public API is accessed reflectively so no snapshot repository or shaded API copy is required. The hook contributes read-only statistics tools, profiler status, a raw-data toolset (list, chunked base64 read, schema-free protobuf structure inspection), and the `edenmcp://spark/stats` resource. Profiler/diagnostic commands are built from strict allowlists, dispatched on the server thread with a captured reply, and audited; results are saved locally and never uploaded. Raw files are restricted to Spark's own directory, to `.sparkprofile`/`.hprof` extensions, and to simple file names to prevent traversal.
 
 ## Configuration
 
@@ -208,7 +216,7 @@ mcp:
 
   policy:
     # allow-unsafe-at-runtime: true  # false = require console for 'unsafe'
-    # logs-require-moderate: false   # true = hide eden.logs.read in safe mode
+    # logs-require-moderate: false   # true = hide edenmcp.logs.read in safe mode
 
   tools:
     # chat-min-interval-ms: 250      # global chat throttle; 0 disables it
@@ -226,6 +234,16 @@ hooks:
     enabled: true
   spark:
     enabled: true
+  # Policy for hooks registered by other plugins through the public API
+  external:
+    default-enabled: true
+    max-capability-level: moderate
+    allow-dangerous-side-effects: false
+    overrides: {}
+    #  myplugin:
+    #    enabled: true
+    #    max-capability-level: unsafe
+    #    allow-dangerous-side-effects: true
 
 commands:
   # Command dispatch is UNSAFE_ACTION by default.
@@ -246,12 +264,12 @@ audit:
 - Default mode is `safe`. A cryptographically random, owner-only access key is generated into a static `.key` file on first startup; protect this file and distribute the key out-of-band to authorized clients. All new keys above are **optional** with secure defaults — a fresh install needs none of them.
 - Hooks listed here reflect server-owned integrations assembled by `plugin`; clients cannot add or reconfigure hooks.
 - Command classification rules are server-side only (ordered regex list, first match wins); unmatched commands remain `UNSAFE_ACTION` by default. Patterns are always anchored to the whole command.
-- `eden.config.get` is broadly exposed but applies layered redaction to sensitive keys/paths so secrets are never returned.
+- `edenmcp.config.get` is broadly exposed but applies layered redaction to sensitive keys/paths so secrets are never returned.
 
 ## Auditing & Safety
 
 - Require and verify the access key on every request; reject unauthenticated access early. Failed authentication is throttled per source IP, and auth failures are always logged.
-- Log every tool invocation, resource read, and mode change with timestamp, tool/resource id, mode, caller identity (as available from transport), and a sanitized, length-bounded outcome. Resource reads share the `audit.log-tool-calls` toggle, and resource content is never written to the log. Sensitive content is **redacted at log-write time**: command text, chat messages, and tool error details are not written by default, so `eden.logs.read` cannot expose them. Operators who explicitly want detail can enable `audit.log-verbose`.
+- Log every tool invocation, resource read, and mode change with timestamp, tool/resource id, mode, caller identity (as available from transport), and a sanitized, length-bounded outcome. Resource reads share the `audit.log-tool-calls` toggle, and resource content is never written to the log. Sensitive content is **redacted at log-write time**: command text, chat messages, and tool error details are not written by default, so `edenmcp.logs.read` cannot expose them. Operators who explicitly want detail can enable `audit.log-verbose`.
 - Enforce bounded inputs: bounded request bodies (1 MiB) and JSON-RPC batches, capped SSE clients and a bounded HTTP worker pool, log line/filter bounds with regex-abuse rejection, and rate limits for chat.
 - Make `unsafe` mode, remote binding, and TLS-disabled state clearly visible in startup/runtime logs (including the generated certificate SHA-256 fingerprint when applicable). A warning is emitted if audit logging is disabled.
 - Treat the access key as the primary authorization gate; operators should combine it with network-level controls for remote deployments.
@@ -263,12 +281,12 @@ Implemented and covered by unit and Paper integration tests: the core mode/capab
 ## Resolved Decisions
 
 - **Transport:** HTTP + SSE on a dedicated MCP port (remote-capable). **Built-in TLS** is enabled by default: on first startup a self-signed certificate/keypair is generated (fingerprint logged for client verification/pinning), with support for operator-supplied certificates; TLS can be explicitly disabled for trusted/tunneled setups with a prominent warning. This allows secure remote access on normal hosting platforms without requiring SSH port-forwarding or an external reverse proxy.
-- **Runtime mode:** changeable at runtime via authorized, audited control operations (`eden.mode.set`, `MODERATE_ACTION`). Escalation to `unsafe` is permitted by default; `mcp.policy.allow-unsafe-at-runtime: false` locks it to the console.
+- **Runtime mode:** changeable at runtime via authorized, audited control operations (`edenmcp.mode.set`, `MODERATE_ACTION`). Escalation to `unsafe` is permitted by default; `mcp.policy.allow-unsafe-at-runtime: false` locks it to the console.
 - **Commands:** command dispatch is `UNSAFE_ACTION` and cannot be reclassified below `unsafe` as a tool. The server configures per-command classification via an **ordered list of regex rules** (`level` + `pattern`), **first match wins**, always anchored to the whole command; chaining/control characters are rejected and unmatched commands remain `unsafe`.
 - **Access key:** a static, owner-only `.key` file is generated on first plugin startup (256-bit random); invalid files are quarantined and regenerated. Optional rotation (`mcp key rotate`, with an in-memory grace window) and multi-key files are available for operators who need them; a fresh install requires neither.
 - **Credential header:** `Authorization: Bearer <key>` is canonical; query-string and raw `Authorization` keys are rejected. `X-Eden-Key` is a deprecated opt-in alias.
 - **TLS:** built-in self-signed TLS by default with owner-only keystore + random password; fingerprint logged for pinning; TLS 1.2/1.3 AEAD-only; custom keystore and mTLS optional.
-- **`eden.config.get` redaction:** layered policy — never inline secret stores (report presence/status only), default-deny heuristic masking for sensitive key/path names (e.g. `key`, `token`, `secret`, `password`, `credential`, `auth`, `private`) plus an explicit denylist for known sensitive paths, with narrowly scoped allow-through exceptions for known non-secret collisions; applied to core and hook-exposed config/state.
+- **`edenmcp.config.get` redaction:** layered policy — never inline secret stores (report presence/status only), default-deny heuristic masking for sensitive key/path names (e.g. `key`, `token`, `secret`, `password`, `credential`, `auth`, `private`) plus an explicit denylist for known sensitive paths, with narrowly scoped allow-through exceptions for known non-secret collisions; applied to core and hook-exposed config/state.
 
 ## Open Questions
 
